@@ -13,6 +13,7 @@
 - ログイン中メールアドレス表示とログアウト
 - `manifest.json`、アプリアイコン、theme color、standalone、safe area対応、最低限Service Worker
 - 開発用メール＋パスワードログイン
+- 任意のユーザー特性、目的、最新体組成の保存
 
 ## 未実装機能
 
@@ -50,6 +51,11 @@ Supabase SQL Editorで以下を実行してください。
 - `supabase/migrations/20260608000000_exercise_catalog.sql`
 - `supabase/migrations/20260608001000_workout_set_exercise_order.sql`
 - `supabase/migrations/20260608002000_ai_report_status.sql`
+- `supabase/migrations/20260608003000_user_fitness_profile.sql`
+
+`user_fitness_profiles` と `body_measurements` もSupabase SQL Editorでmigrationを実行して作成してください。ユーザー特性、目的、体組成はすべて任意入力です。未入力でもトレーニング記録とAI診断は利用できます。
+
+体組成の骨格筋量、骨格筋率、筋肉量は、InBody、TANITA、ジムの業務用マシン、家庭用体組成計など測定機器によって定義や表示が異なる場合があります。分かる項目だけ入力してください。
 
 ## Supabase Auth URL設定
 

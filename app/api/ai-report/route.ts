@@ -15,6 +15,47 @@ type ReportPayload = {
   next_workout: string;
 };
 
+type UserFitnessProfile = {
+  height_cm: number | string | null;
+  training_experience: string | null;
+  primary_goal: string | null;
+  secondary_goal: string | null;
+};
+
+type BodyMeasurement = {
+  measured_at: string;
+  weight_kg: number | string | null;
+  body_fat_percent: number | string | null;
+  skeletal_muscle_mass_kg: number | string | null;
+  skeletal_muscle_rate_percent: number | string | null;
+  muscle_mass_kg: number | string | null;
+  measurement_device: string | null;
+  memo: string | null;
+};
+
+const trainingExperienceLabels: Record<string, string> = {
+  beginner: "初心者",
+  intermediate: "中級者",
+  advanced: "上級者"
+};
+
+const goalLabels: Record<string, string> = {
+  fat_loss: "ダイエット",
+  hypertrophy: "筋肥大",
+  strength: "筋力アップ",
+  body_make: "ボディメイク",
+  health: "健康維持",
+  contest: "競技・大会",
+  maintenance: "維持"
+};
+
+const measurementDeviceLabels: Record<string, string> = {
+  inbody: "InBody",
+  tanita: "TANITA",
+  other: "その他",
+  unknown: "不明"
+};
+
 function normalizeReport(value: unknown): ReportPayload {
   const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 
@@ -38,6 +79,91 @@ function parseJsonReport(content: string): ReportPayload {
 
     return normalizeReport(JSON.parse(match[0]));
   }
+}
+
+function hasInput(value: unknown) {
+  return value !== null && value !== undefined && String(value).trim() !== "";
+}
+
+function addNumberIfPresent(
+  target: Record<string, unknown>,
+  key: string,
+  value: number | string | null
+) {
+  if (hasInput(value)) {
+    target[key] = Number(value);
+  }
+}
+
+function buildUserFitnessContext(
+  profile: UserFitnessProfile | null,
+  measurement: BodyMeasurement | null
+) {
+  const profileContext: Record<string, unknown> = {};
+  const measurementContext: Record<string, unknown> = {};
+
+  if (profile) {
+    addNumberIfPresent(profileContext, "height_cm", profile.height_cm);
+
+    if (hasInput(profile.training_experience)) {
+      profileContext.training_experience = {
+        value: profile.training_experience,
+        label: trainingExperienceLabels[profile.training_experience ?? ""] ?? profile.training_experience
+      };
+    }
+
+    if (hasInput(profile.primary_goal)) {
+      profileContext.primary_goal = {
+        value: profile.primary_goal,
+        label: goalLabels[profile.primary_goal ?? ""] ?? profile.primary_goal
+      };
+    }
+
+    if (hasInput(profile.secondary_goal)) {
+      profileContext.secondary_goal = {
+        value: profile.secondary_goal,
+        label: goalLabels[profile.secondary_goal ?? ""] ?? profile.secondary_goal
+      };
+    }
+  }
+
+  if (measurement) {
+    if (hasInput(measurement.measured_at)) {
+      measurementContext.measured_at = measurement.measured_at;
+    }
+
+    addNumberIfPresent(measurementContext, "weight_kg", measurement.weight_kg);
+    addNumberIfPresent(measurementContext, "body_fat_percent", measurement.body_fat_percent);
+    addNumberIfPresent(
+      measurementContext,
+      "skeletal_muscle_mass_kg",
+      measurement.skeletal_muscle_mass_kg
+    );
+    addNumberIfPresent(
+      measurementContext,
+      "skeletal_muscle_rate_percent",
+      measurement.skeletal_muscle_rate_percent
+    );
+    addNumberIfPresent(measurementContext, "muscle_mass_kg", measurement.muscle_mass_kg);
+
+    if (hasInput(measurement.measurement_device)) {
+      measurementContext.measurement_device = {
+        value: measurement.measurement_device,
+        label:
+          measurementDeviceLabels[measurement.measurement_device ?? ""] ??
+          measurement.measurement_device
+      };
+    }
+
+    if (hasInput(measurement.memo)) {
+      measurementContext.memo = measurement.memo;
+    }
+  }
+
+  return {
+    profile: Object.keys(profileContext).length ? profileContext : null,
+    latest_body_measurement: Object.keys(measurementContext).length ? measurementContext : null
+  };
 }
 
 async function getAuthenticatedUser(request: Request) {
@@ -136,6 +262,28 @@ export async function POST(request: Request) {
       .order("created_at", { ascending: false })
       .limit(40);
 
+    const [{ data: fitnessProfile }, { data: latestBodyMeasurement }] = await Promise.all([
+      admin
+        .from("user_fitness_profiles")
+        .select("height_cm, training_experience, primary_goal, secondary_goal")
+        .eq("user_id", user.id)
+        .maybeSingle(),
+      admin
+        .from("body_measurements")
+        .select(
+          "measured_at, weight_kg, body_fat_percent, skeletal_muscle_mass_kg, skeletal_muscle_rate_percent, muscle_mass_kg, measurement_device, memo"
+        )
+        .eq("user_id", user.id)
+        .order("measured_at", { ascending: false })
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+    ]);
+    const userFitnessContext = buildUserFitnessContext(
+      (fitnessProfile as UserFitnessProfile | null) ?? null,
+      (latestBodyMeasurement as BodyMeasurement | null) ?? null
+    );
+
     const openai = new OpenAI({
       apiKey: requireEnv("OPENAI_API_KEY")
     });
@@ -148,7 +296,7 @@ export async function POST(request: Request) {
         {
           role: "system",
           content:
-            "あなたは筋トレ記録を分析するコーチです。初心者にも経験者にも通じる短い日本語で、パワーリフティングとボディメイクの両方を意識して診断します。医学的診断は避け、フォーム不安や痛みがある場合は専門家への相談を促します。必ずJSONだけを返してください。"
+            "あなたは筋トレ記録を分析するコーチです。初心者にも経験者にも通じる短い日本語で、パワーリフティングとボディメイクの両方を意識して診断します。医学的診断は避け、フォーム不安や痛みがある場合は専門家への相談を促します。ユーザー特性は入力済みの項目だけを使い、未入力項目は推測しません。必ずJSONだけを返してください。"
         },
         {
           role: "user",
@@ -161,7 +309,8 @@ export async function POST(request: Request) {
               next_workout: "string"
             },
             instruction:
-              "今日の実施種目全体を見て、種目構成、セット数、重量、回数、総ボリューム、強度、前回同種目ログとの差をスマホで読みやすい短さで診断してください。1種目だけでなくセッション全体のバランスを見てください。次回提案には主要種目の重量または回数の具体案を含めてください。",
+              "今日の実施種目全体を見て、種目構成、セット数、重量、回数、総ボリューム、強度、前回同種目ログとの差をスマホで読みやすい短さで診断してください。1種目だけでなくセッション全体のバランスを見てください。次回提案には主要種目の重量または回数の具体案を含めてください。user_fitness_contextに入力済みのユーザー特性がある場合だけ考慮してください。体重がある場合だけ体重比を補助的に見てください。体脂肪率がない場合は体脂肪状態や減量状態を断定しないでください。骨格筋量、骨格筋率、筋肉量は同じものとして扱わず、測定機器がある場合も測定差を前提に断定しすぎないでください。目的が未入力の場合は一般的な筋肥大と筋力向上の両面から控えめに診断し、目的を決めつけないでください。",
+            user_fitness_context: userFitnessContext,
             current_session: {
               session_date: session.session_date,
               title: session.title,
@@ -201,6 +350,7 @@ export async function POST(request: Request) {
           raw_json: {
             model: "gpt-4o-mini",
             response: report,
+            user_fitness_context: userFitnessContext,
             previous_same_exercise_sets: previousSets ?? []
           }
         },

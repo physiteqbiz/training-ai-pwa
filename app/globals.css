@@ -154,6 +154,11 @@ summary {
   border-color: var(--accent);
 }
 
+.textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+
 .button {
   display: inline-flex;
   min-height: 50px;
@@ -456,6 +461,11 @@ summary {
 .status.error {
   border-color: #5b2c27;
   color: var(--danger);
+}
+
+.status.success {
+  border-color: #286748;
+  color: var(--accent);
 }
 
 .bottom-nav {
