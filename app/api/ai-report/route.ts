@@ -83,7 +83,7 @@ export async function POST(request: Request) {
     const { data: session, error: sessionError } = await admin
       .from("workout_sessions")
       .select(
-        "id, user_id, session_date, title, memo, workout_sets(id, exercise_name, weight, reps, set_order)"
+        "id, user_id, session_date, title, memo, workout_sets(id, exercise_name, weight, reps, set_order, exercise_order)"
       )
       .eq("id", sessionId)
       .eq("user_id", user.id)
@@ -101,11 +101,28 @@ export async function POST(request: Request) {
       weight: number | string;
       reps: number;
       set_order: number;
+      exercise_order?: number;
     }>;
 
     if (sets.length === 0) {
       return NextResponse.json({ error: "Workout sets are empty." }, { status: 400 });
     }
+
+    const exerciseSummary = [...new Set(sets.map((set) => set.exercise_name))].map(
+      (exerciseName) => ({
+        exercise_name: exerciseName,
+        set_count: sets.filter((set) => set.exercise_name === exerciseName).length,
+        sets: sets
+          .filter((set) => set.exercise_name === exerciseName)
+          .sort((a, b) => a.set_order - b.set_order)
+          .map((set) => ({
+            weight: set.weight,
+            reps: set.reps,
+            set_order: set.set_order,
+            exercise_order: set.exercise_order ?? 0
+          }))
+      })
+    );
 
     const exerciseNames = [...new Set(sets.map((set) => set.exercise_name))];
     const { data: previousSets } = await admin
@@ -144,10 +161,11 @@ export async function POST(request: Request) {
               next_workout: "string"
             },
             instruction:
-              "今日の種目、重量、回数、セット数、ボリューム、強度、前回同種目ログとの差を見て、スマホで読みやすい短さで診断してください。次回提案には重量または回数の具体案を含めてください。",
+              "今日の実施種目全体を見て、種目構成、セット数、重量、回数、総ボリューム、強度、前回同種目ログとの差をスマホで読みやすい短さで診断してください。1種目だけでなくセッション全体のバランスを見てください。次回提案には主要種目の重量または回数の具体案を含めてください。",
             current_session: {
               session_date: session.session_date,
               title: session.title,
+              exercise_summary: exerciseSummary,
               sets
             },
             previous_same_exercise_sets: previousSets ?? []
@@ -196,6 +214,19 @@ export async function POST(request: Request) {
     if (saveError || !savedReport) {
       return NextResponse.json(
         { error: saveError?.message ?? "Failed to save AI report." },
+        { status: 500 }
+      );
+    }
+
+    const { error: statusError } = await admin
+      .from("workout_sessions")
+      .update({ ai_report_status: "generated" })
+      .eq("id", session.id)
+      .eq("user_id", user.id);
+
+    if (statusError) {
+      return NextResponse.json(
+        { error: statusError.message },
         { status: 500 }
       );
     }

@@ -12,6 +12,7 @@ type WorkoutSet = {
   weight: number | string;
   reps: number;
   set_order: number;
+  exercise_order?: number;
 };
 
 type AiReport = {
@@ -25,10 +26,13 @@ type AiReport = {
   next_workout: string | null;
 };
 
+type AiReportStatus = "not_generated" | "generated" | "stale";
+
 type SessionDetail = {
   id: string;
   session_date: string;
   title: string | null;
+  ai_report_status: AiReportStatus;
   workout_sets: WorkoutSet[];
   ai_reports: AiReport[];
 };
@@ -44,6 +48,21 @@ export default function ReportPage() {
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState("");
 
+  const exerciseSummaries = useMemo(() => {
+    const grouped = new Map<string, WorkoutSet[]>();
+
+    for (const set of session?.workout_sets ?? []) {
+      const current = grouped.get(set.exercise_name) ?? [];
+      current.push(set);
+      grouped.set(set.exercise_name, current);
+    }
+
+    return Array.from(grouped.entries()).map(([exerciseName, sets]) => ({
+      exerciseName,
+      sets: sets.slice().sort((a, b) => a.set_order - b.set_order)
+    }));
+  }, [session]);
+
   function hasReportContent(nextReport: AiReport | null | undefined) {
     return Boolean(
       nextReport?.summary ||
@@ -53,6 +72,16 @@ export default function ReportPage() {
         nextReport?.next_workout
     );
   }
+
+  const aiReportStatus = session?.ai_report_status ?? "not_generated";
+  const generateButtonLabel =
+    aiReportStatus === "stale" ? "AI診断を再生成" : "AI診断を生成";
+  const reportStatusMessage =
+    aiReportStatus === "stale"
+      ? "セッション内容が更新されたため、AI診断の再生成が必要です。"
+      : aiReportStatus === "generated"
+        ? "AI診断結果が見つかりません。再生成してください。"
+        : "このセッションのAI診断はまだ生成されていません。";
 
   const fetchLatestReport = useCallback(async () => {
     const { data, error: reportError } = await supabase
@@ -87,7 +116,7 @@ export default function ReportPage() {
     const { data, error: loadError } = await supabase
       .from("workout_sessions")
       .select(
-        "id, session_date, title, workout_sets(id, exercise_name, weight, reps, set_order)"
+        "id, session_date, title, ai_report_status, workout_sets(id, exercise_name, weight, reps, set_order, exercise_order)"
       )
       .eq("id", sessionId)
       .single();
@@ -98,7 +127,11 @@ export default function ReportPage() {
       const detail = data as SessionDetail;
       setSession(detail);
       const latestReport = await fetchLatestReport();
-      setReport(hasReportContent(latestReport) ? latestReport : null);
+      setReport(
+        detail.ai_report_status === "generated" && hasReportContent(latestReport)
+          ? latestReport
+          : null
+      );
     }
 
     setLoading(false);
@@ -159,6 +192,9 @@ export default function ReportPage() {
       console.log("ai report saved/displayed", payload.report);
     }
 
+    setSession((current) =>
+      current ? { ...current, ai_report_status: "generated" } : current
+    );
     setGenerating(false);
     router.refresh();
   }, [fetchLatestReport, router, sessionId, supabase]);
@@ -181,28 +217,36 @@ export default function ReportPage() {
       {session ? (
         <section className="panel">
           <h2>{session.title || "トレーニング"}</h2>
-          <div className="history-card__sets">
-            {session.workout_sets
-              .slice()
-              .sort((a, b) => a.set_order - b.set_order)
-              .map((set) => (
-                <span className="pill" key={set.id}>
-                  {set.exercise_name} {Number(set.weight)}kg x {set.reps}
-                </span>
-              ))}
+          <div className="previous-list">
+            {exerciseSummaries.map((summary) => (
+              <div className="previous-row" key={summary.exerciseName}>
+                <div>
+                  <strong>{summary.exerciseName}</strong>
+                  <span>{summary.sets.length}セット</span>
+                </div>
+                <p>
+                  {summary.sets
+                    .map((set) => `${Number(set.weight)}kg × ${set.reps}`)
+                    .join(" / ")}
+                </p>
+              </div>
+            ))}
           </div>
         </section>
       ) : null}
 
       {!report ? (
-        <button
-          className="button full"
-          type="button"
-          disabled={generating || !session}
-          onClick={generateReport}
-        >
-          {generating ? "診断生成中" : "AI診断を生成"}
-        </button>
+        <section className="panel">
+          <p className="muted">{reportStatusMessage}</p>
+          <button
+            className="button full"
+            type="button"
+            disabled={generating || !session}
+            onClick={generateReport}
+          >
+            {generating ? "診断生成中" : generateButtonLabel}
+          </button>
+        </section>
       ) : null}
 
       {report ? (

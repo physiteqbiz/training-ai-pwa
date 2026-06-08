@@ -11,16 +11,73 @@ type WorkoutSet = {
   weight: number | string;
   reps: number;
   set_order: number;
+  exercise_order?: number;
 };
+
+type AiReportStatus = "not_generated" | "generated" | "stale";
 
 type WorkoutSession = {
   id: string;
   session_date: string;
   title: string | null;
   created_at: string;
+  ai_report_status?: AiReportStatus;
   workout_sets: WorkoutSet[];
   ai_reports: { id: string; created_at: string }[];
 };
+
+type ExerciseGroup = {
+  exerciseName: string;
+  sets: WorkoutSet[];
+};
+
+function groupSetsByExercise(sets: WorkoutSet[]) {
+  const grouped = new Map<string, WorkoutSet[]>();
+
+  for (const set of sets.slice().sort((a, b) => {
+    const aExerciseOrder = a.exercise_order ?? 0;
+    const bExerciseOrder = b.exercise_order ?? 0;
+
+    return aExerciseOrder - bExerciseOrder || a.set_order - b.set_order;
+  })) {
+    const current = grouped.get(set.exercise_name) ?? [];
+    current.push(set);
+    grouped.set(set.exercise_name, current);
+  }
+
+  return Array.from(grouped.entries()).map(([exerciseName, groupedSets]) => ({
+    exerciseName,
+    sets: groupedSets
+  }));
+}
+
+function getAiReportStatus(session: WorkoutSession): AiReportStatus {
+  return session.ai_report_status ?? (session.ai_reports?.length ? "generated" : "not_generated");
+}
+
+function getAiReportStatusLabel(status: AiReportStatus) {
+  if (status === "generated") {
+    return "AI診断：生成済み";
+  }
+
+  if (status === "stale") {
+    return "AI診断：要再生成";
+  }
+
+  return "AI診断：未生成";
+}
+
+function getAiReportActionLabel(status: AiReportStatus) {
+  if (status === "generated") {
+    return "AI診断を見る";
+  }
+
+  if (status === "stale") {
+    return "AI診断を再生成";
+  }
+
+  return "AI診断を生成";
+}
 
 export default function HomePage() {
   const router = useRouter();
@@ -52,7 +109,7 @@ export default function HomePage() {
       const { data, error: sessionsError } = await supabase
         .from("workout_sessions")
         .select(
-          "id, session_date, title, created_at, workout_sets(exercise_name, weight, reps, set_order), ai_reports(id, created_at)"
+          "id, session_date, title, created_at, ai_report_status, workout_sets(exercise_name, weight, reps, set_order, exercise_order), ai_reports(id, created_at)"
         )
         .order("session_date", { ascending: false })
         .order("created_at", { ascending: false })
@@ -78,7 +135,13 @@ export default function HomePage() {
     };
   }, [router, supabase]);
 
-  const latestReportSession = sessions.find((session) => session.ai_reports?.length);
+  const latestReportSession = sessions.find(
+    (session) => getAiReportStatus(session) === "generated"
+  );
+  const visibleSessions = sessions.filter(
+    (session, index, current) =>
+      current.findIndex((candidate) => candidate.session_date === session.session_date) === index
+  );
 
   return (
     <div className="screen">
@@ -106,36 +169,70 @@ export default function HomePage() {
           {loading ? <span className="muted">読込中</span> : null}
         </div>
         {error ? <div className="status error">{error}</div> : null}
-        {!loading && sessions.length === 0 ? (
+        {!loading && visibleSessions.length === 0 ? (
           <div className="status">まだ記録がありません。</div>
         ) : null}
         <div className="history-list">
-          {sessions.map((session) => (
-            <Link
-              key={session.id}
-              className="history-card"
-              href={`/reports/${session.id}`}
-            >
+          {visibleSessions.map((session) => {
+            const exerciseGroups: ExerciseGroup[] = groupSetsByExercise(
+              session.workout_sets ?? []
+            );
+            const totalSets = exerciseGroups.reduce(
+              (sum, group) => sum + group.sets.length,
+              0
+            );
+            const aiReportStatus = getAiReportStatus(session);
+
+            return (
+              <article key={session.id} className="history-card">
               <div className="row">
-                <h3>{session.title || "トレーニング"}</h3>
+                <div>
+                  <h3>{session.title || "今日のトレーニング"}</h3>
+                  <p className="muted">
+                    {exerciseGroups.length}種目 / {totalSets}セット
+                  </p>
+                </div>
                 <span className="muted">{session.session_date}</span>
               </div>
-              <div className="history-card__sets">
-                {session.workout_sets
-                  ?.slice()
-                  .sort((a, b) => a.set_order - b.set_order)
-                  .slice(0, 5)
-                  .map((set, index) => (
-                    <span className="pill" key={`${set.exercise_name}-${index}`}>
-                      {set.exercise_name} {Number(set.weight)}kg x {set.reps}
-                    </span>
-                  ))}
+
+              <span className={`status-badge ai-status-${aiReportStatus}`}>
+                {getAiReportStatusLabel(aiReportStatus)}
+              </span>
+
+              <div className="history-exercise-list">
+                {exerciseGroups.map((group) => (
+                  <div className="history-exercise-block" key={group.exerciseName}>
+                    <div className="row">
+                      <h3>{group.exerciseName}</h3>
+                      <Link
+                        className="button ghost"
+                        href={`/workouts/new?sessionId=${session.id}&focusExercise=${encodeURIComponent(group.exerciseName)}`}
+                      >
+                        編集
+                      </Link>
+                    </div>
+                    <div className="stack">
+                      {group.sets.map((set, index) => (
+                        <p key={`${group.exerciseName}-${index}`}>
+                          {Number(set.weight)}kg × {set.reps}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                ))}
               </div>
-              <p className="muted">
-                {session.ai_reports?.length ? "AI診断あり" : "AI診断未生成"}
-              </p>
-            </Link>
-          ))}
+
+              <div className="history-actions">
+                <Link className="button secondary" href={`/reports/${session.id}`}>
+                  {getAiReportActionLabel(aiReportStatus)}
+                </Link>
+                <Link className="button ghost" href={`/workouts/new?sessionId=${session.id}`}>
+                  セッション全体を編集
+                </Link>
+              </div>
+            </article>
+            );
+          })}
         </div>
       </section>
 
