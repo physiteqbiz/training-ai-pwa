@@ -79,6 +79,19 @@ function getAiReportActionLabel(status: AiReportStatus) {
   return "AI診断を生成";
 }
 
+function isStandaloneDisplay() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  const navigatorWithStandalone = window.navigator as Navigator & { standalone?: boolean };
+
+  return (
+    window.matchMedia("(display-mode: standalone)").matches ||
+    navigatorWithStandalone.standalone === true
+  );
+}
+
 export default function HomePage() {
   const router = useRouter();
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
@@ -86,6 +99,12 @@ export default function HomePage() {
   const [sessions, setSessions] = useState<WorkoutSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [showInstallGuide, setShowInstallGuide] = useState(false);
+
+  useEffect(() => {
+    const hidden = window.localStorage.getItem("hideInstallGuide") === "true";
+    setShowInstallGuide(!hidden && !isStandaloneDisplay());
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -162,6 +181,35 @@ export default function HomePage() {
       ) : (
         <div className="status">AI診断はセッション保存後に生成できます。</div>
       )}
+
+      {showInstallGuide ? (
+        <section className="install-card">
+          <div className="stack">
+            <div>
+              <p className="eyebrow">スマホに追加</p>
+              <h2>アプリのように使う</h2>
+            </div>
+            <p className="muted">
+              ホーム画面に追加すると、次回から1タップでトレーニング記録を開けます。
+            </p>
+          </div>
+          <div className="install-card__actions">
+            <Link className="button secondary" href="/install">
+              追加方法を見る
+            </Link>
+            <button
+              className="button ghost"
+              type="button"
+              onClick={() => {
+                window.localStorage.setItem("hideInstallGuide", "true");
+                setShowInstallGuide(false);
+              }}
+            >
+              閉じる
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       <section className="panel">
         <div className="row">

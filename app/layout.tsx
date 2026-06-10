@@ -7,7 +7,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "筋トレ診断AI",
-  description: "筋トレ記録とAI診断のPWA",
+  description: "筋トレ記録とAI診断のスマホ向けアプリ",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,

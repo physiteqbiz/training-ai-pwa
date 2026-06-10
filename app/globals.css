@@ -397,6 +397,32 @@ summary {
   gap: 8px;
 }
 
+.install-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid #284938;
+  border-radius: 8px;
+  background: #121c18;
+  padding: 14px;
+}
+
+.install-card__actions {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.step-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 1.4rem;
+}
+
+.step-list li {
+  padding-left: 2px;
+}
+
 .history-card__sets {
   display: flex;
   flex-wrap: wrap;

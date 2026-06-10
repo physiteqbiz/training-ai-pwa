@@ -1,7 +1,7 @@
 {
   "name": "筋トレ診断AI",
   "short_name": "筋トレAI",
-  "description": "筋トレ記録とAI診断のPWA",
+  "description": "筋トレ記録とAI診断のスマホ向けアプリ",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
