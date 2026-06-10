@@ -9,6 +9,7 @@
 - 種目、重量、回数、セット保存
 - 前回同種目ログ表示
 - 保存済みセッションへのAI診断生成
+- AI診断v2の構造化表示
 - 今日の要約、前回比、良かった点、注意点、次回メニュー提案の表示
 - ログイン中メールアドレス表示とログアウト
 - `manifest.json`、アプリアイコン、theme color、standalone、safe area対応、最低限Service Worker
@@ -68,6 +69,14 @@ Supabase SQL Editorで以下を実行してください。
 `user_fitness_profiles` と `body_measurements` もSupabase SQL Editorでmigrationを実行して作成してください。ユーザー特性、目的、体組成はすべて任意入力です。未入力でもトレーニング記録とAI診断は利用できます。
 
 体組成の骨格筋量、骨格筋率、筋肉量は、InBody、TANITA、ジムの業務用マシン、家庭用体組成計など測定機器によって定義や表示が異なる場合があります。分かる項目だけ入力してください。
+
+## AI診断v2
+
+AI診断v2では、セッション全体、種目別の総ボリューム、最大重量、推定1RM、前回比較、直近3回傾向、ユーザー目的を考慮して診断します。API側で計算できる分析値を先に作成し、AIにはその計算済みデータを渡します。
+
+診断本文は既存の `summary`、`comparison`、`good_points`、`cautions`、`next_workout` にも保存し、詳細なv2構造、計算済み分析、ユーザー特性は `ai_reports.raw_json` に保存します。
+
+古いAI診断データにv2構造がない場合でも、画面では従来の `summary` / `comparison` / `good_points` / `cautions` / `next_workout` を使って後方互換表示します。
 
 ## Supabase Auth URL設定
 

@@ -476,6 +476,60 @@ summary {
   font-size: 1rem;
 }
 
+.score-section {
+  border-color: #286748;
+  background: #101f18;
+}
+
+.score-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.score-row strong {
+  color: var(--accent);
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.score-row span {
+  color: var(--accent-2);
+  font-weight: 800;
+}
+
+.exercise-diagnostic-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 14px;
+}
+
+.suggested-set-list {
+  display: grid;
+  gap: 8px;
+}
+
+.suggested-set {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0e1215;
+  padding: 12px;
+}
+
+.suggested-set strong {
+  color: var(--accent);
+}
+
+.suggested-set span {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
 .status {
   border: 1px solid var(--line);
   border-radius: 8px;

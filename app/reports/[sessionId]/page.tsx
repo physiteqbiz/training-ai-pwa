@@ -24,6 +24,36 @@ type AiReport = {
   good_points: string | null;
   cautions: string | null;
   next_workout: string | null;
+  raw_json?: unknown;
+};
+
+type SuggestedSet = {
+  weight: number;
+  reps: number;
+  sets: number;
+  note: string;
+};
+
+type ExerciseDiagnostic = {
+  exercise_name: string;
+  label: string;
+  analysis: string;
+  previous_comparison: string;
+  next_target: string;
+  suggested_sets: SuggestedSet[];
+};
+
+type AiReportV2 = {
+  overall_score?: number;
+  overall_label?: string;
+  summary: string;
+  progress_highlight?: string;
+  comparison: string;
+  exercise_diagnostics: ExerciseDiagnostic[];
+  goal_based_advice?: string;
+  priority_focus?: string;
+  cautions: string;
+  next_workout: string;
 };
 
 type AiReportStatus = "not_generated" | "generated" | "stale";
@@ -37,6 +67,81 @@ type SessionDetail = {
   ai_reports: AiReport[];
 };
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function normalizeSuggestedSets(value: unknown): SuggestedSet[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.map((item) => {
+    const record = asRecord(item);
+
+    return {
+      weight: Number(record.weight ?? 0),
+      reps: Number(record.reps ?? 0),
+      sets: Number(record.sets ?? 0),
+      note: String(record.note ?? "")
+    };
+  });
+}
+
+function normalizeV2Report(value: unknown): AiReportV2 | null {
+  const raw = asRecord(value);
+  const response = asRecord(raw.response);
+  const source = Object.keys(response).length ? response : raw;
+  const diagnostics = Array.isArray(source.exercise_diagnostics)
+    ? source.exercise_diagnostics
+    : [];
+
+  if (!source.summary || diagnostics.length === 0) {
+    return null;
+  }
+
+  return {
+    overall_score:
+      source.overall_score === undefined || source.overall_score === null
+        ? undefined
+        : Number(source.overall_score),
+    overall_label:
+      source.overall_label === undefined || source.overall_label === null
+        ? undefined
+        : String(source.overall_label),
+    summary: String(source.summary ?? ""),
+    progress_highlight:
+      source.progress_highlight === undefined || source.progress_highlight === null
+        ? undefined
+        : String(source.progress_highlight),
+    comparison: String(source.comparison ?? ""),
+    exercise_diagnostics: diagnostics
+      .map((item) => {
+        const diagnostic = asRecord(item);
+
+        return {
+          exercise_name: String(diagnostic.exercise_name ?? ""),
+          label: String(diagnostic.label ?? ""),
+          analysis: String(diagnostic.analysis ?? ""),
+          previous_comparison: String(diagnostic.previous_comparison ?? ""),
+          next_target: String(diagnostic.next_target ?? ""),
+          suggested_sets: normalizeSuggestedSets(diagnostic.suggested_sets)
+        };
+      })
+      .filter((item) => item.exercise_name),
+    goal_based_advice:
+      source.goal_based_advice === undefined || source.goal_based_advice === null
+        ? undefined
+        : String(source.goal_based_advice),
+    priority_focus:
+      source.priority_focus === undefined || source.priority_focus === null
+        ? undefined
+        : String(source.priority_focus),
+    cautions: String(source.cautions ?? ""),
+    next_workout: String(source.next_workout ?? "")
+  };
+}
+
 export default function ReportPage() {
   const params = useParams<{ sessionId: string }>();
   const sessionId = params.sessionId;
@@ -47,6 +152,7 @@ export default function ReportPage() {
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState("");
+  const reportV2 = useMemo(() => normalizeV2Report(report?.raw_json), [report]);
 
   const exerciseSummaries = useMemo(() => {
     const grouped = new Map<string, WorkoutSet[]>();
@@ -87,7 +193,7 @@ export default function ReportPage() {
     const { data, error: reportError } = await supabase
       .from("ai_reports")
       .select(
-        "id, session_id, user_id, summary, comparison, good_points, cautions, next_workout"
+        "id, session_id, user_id, summary, comparison, good_points, cautions, next_workout, raw_json"
       )
       .eq("session_id", sessionId)
       .order("created_at", { ascending: false })
@@ -249,7 +355,92 @@ export default function ReportPage() {
         </section>
       ) : null}
 
-      {report ? (
+      {report && reportV2 ? (
+        <section className="stack">
+          <article className="report-section score-section">
+            <p className="eyebrow">総合評価</p>
+            <div className="score-row">
+              {reportV2.overall_score !== undefined ? (
+                <strong>{reportV2.overall_score}点</strong>
+              ) : null}
+              {reportV2.overall_label ? <span>{reportV2.overall_label}</span> : null}
+            </div>
+            <p>{reportV2.summary}</p>
+          </article>
+
+          {reportV2.progress_highlight ? (
+            <article className="report-section">
+              <h2>今日の伸び</h2>
+              <p>{reportV2.progress_highlight}</p>
+            </article>
+          ) : null}
+
+          <section className="stack">
+            <h2>種目別診断</h2>
+            {reportV2.exercise_diagnostics.map((diagnostic) => (
+              <article className="exercise-diagnostic-card" key={diagnostic.exercise_name}>
+                <div className="row">
+                  <h3>{diagnostic.exercise_name}</h3>
+                  {diagnostic.label ? <span className="status-badge">{diagnostic.label}</span> : null}
+                </div>
+                <p>{diagnostic.analysis}</p>
+                {diagnostic.previous_comparison ? (
+                  <div className="status">
+                    <strong>前回比</strong>
+                    <p>{diagnostic.previous_comparison}</p>
+                  </div>
+                ) : null}
+                {diagnostic.next_target ? (
+                  <div className="status">
+                    <strong>次回目標</strong>
+                    <p>{diagnostic.next_target}</p>
+                  </div>
+                ) : null}
+                {diagnostic.suggested_sets.length ? (
+                  <div className="stack">
+                    <h3>次回候補</h3>
+                    <div className="suggested-set-list">
+                      {diagnostic.suggested_sets.map((set, index) => (
+                        <div className="suggested-set" key={`${diagnostic.exercise_name}-${index}`}>
+                          <strong>
+                            {set.weight}kg × {set.reps}回 × {set.sets}セット
+                          </strong>
+                          {set.note ? <span>{set.note}</span> : null}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </article>
+            ))}
+          </section>
+
+          {reportV2.goal_based_advice ? (
+            <article className="report-section">
+              <h2>目的別アドバイス</h2>
+              <p>{reportV2.goal_based_advice}</p>
+            </article>
+          ) : null}
+
+          {reportV2.priority_focus ? (
+            <article className="report-section">
+              <h2>優先ポイント</h2>
+              <p>{reportV2.priority_focus}</p>
+            </article>
+          ) : null}
+
+          <article className="report-section">
+            <h2>注意点</h2>
+            <p>{reportV2.cautions}</p>
+          </article>
+          <article className="report-section">
+            <h2>次回メニュー</h2>
+            <p>{reportV2.next_workout}</p>
+          </article>
+        </section>
+      ) : null}
+
+      {report && !reportV2 ? (
         <section className="stack">
           <article className="report-section">
             <h2>今日のトレーニング要約</h2>

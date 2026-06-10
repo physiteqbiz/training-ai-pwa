@@ -36,8 +36,10 @@ type PreviousSet = {
   weight: number | string;
   reps: number;
   set_order: number;
+  exercise_order?: number;
   created_at: string;
-  workout_sessions: { session_date: string } | { session_date: string }[] | null;
+  session_date: string;
+  session_created_at: string;
 };
 
 type ExistingWorkoutSet = {
@@ -53,6 +55,24 @@ type PreviousSession = {
   sessionId: string;
   sessionDate: string;
   sets: PreviousSet[];
+};
+
+type PreviousWorkoutSetRow = {
+  id: string;
+  session_id: string;
+  exercise_name: string;
+  weight: number | string;
+  reps: number;
+  set_order: number;
+  exercise_order?: number;
+  created_at: string;
+};
+
+type PreviousWorkoutSession = {
+  id: string;
+  session_date: string;
+  created_at: string;
+  workout_sets: PreviousWorkoutSetRow[];
 };
 
 type WorkoutExerciseBlock = {
@@ -77,9 +97,6 @@ function groupPreviousSets(previousSets: PreviousSet[]) {
   const sessionMap = new Map<string, PreviousSession>();
 
   for (const set of previousSets) {
-    const session = Array.isArray(set.workout_sessions)
-      ? set.workout_sessions[0]
-      : set.workout_sessions;
     const existing = sessionMap.get(set.session_id);
 
     if (existing) {
@@ -87,7 +104,7 @@ function groupPreviousSets(previousSets: PreviousSet[]) {
     } else {
       sessionMap.set(set.session_id, {
         sessionId: set.session_id,
-        sessionDate: session?.session_date ?? "",
+        sessionDate: set.session_date,
         sets: [set]
       });
     }
@@ -96,7 +113,13 @@ function groupPreviousSets(previousSets: PreviousSet[]) {
   return Array.from(sessionMap.values())
     .map((session) => ({
       ...session,
-      sets: session.sets.slice().sort((a, b) => a.set_order - b.set_order)
+      sets: session.sets
+        .slice()
+        .sort(
+          (a, b) =>
+            (a.exercise_order ?? 0) - (b.exercise_order ?? 0) ||
+            a.set_order - b.set_order
+        )
     }))
     .slice(0, 3);
 }
@@ -124,29 +147,106 @@ function NewWorkoutPageContent() {
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [error, setError] = useState("");
 
-  async function fetchPreviousSets(exerciseName: string, excludeSessionId?: string) {
-    let query = supabase
-      .from("workout_sets")
-      .select(
-        "id, session_id, exercise_name, weight, reps, set_order, created_at, workout_sessions!inner(session_date)"
-      )
-      .eq("exercise_name", exerciseName)
-      .order("created_at", { ascending: false })
-      .limit(18);
+  async function fetchPreviousSets(
+    exerciseName: string,
+    options?: {
+      excludeSessionId?: string;
+      referenceDate?: string;
+      requestUserId?: string;
+    }
+  ) {
+    const referenceDate = options?.referenceDate || sessionDate;
+    const excludedSessionId = options?.excludeSessionId ?? "";
+    const effectiveUserId = options?.requestUserId || userId;
 
-    if (excludeSessionId) {
-      query = query.neq("session_id", excludeSessionId);
+    console.log("previous history requested exercise_name", exerciseName);
+    console.log("editing session_date", referenceDate);
+    console.log("editing session_id", excludedSessionId || "(new session)");
+
+    let query = supabase
+      .from("workout_sessions")
+      .select(
+        "id, session_date, created_at, workout_sets(id, session_id, exercise_name, weight, reps, set_order, exercise_order, created_at)"
+      )
+      .lt("session_date", referenceDate)
+      .order("session_date", { ascending: false })
+      .order("created_at", { ascending: false })
+      .limit(120);
+
+    if (effectiveUserId) {
+      query = query.eq("user_id", effectiveUserId);
     }
 
-    const { data } = await query;
+    if (excludedSessionId) {
+      query = query.neq("id", excludedSessionId);
+    }
 
-    return (data ?? []) as PreviousSet[];
+    const { data, error: previousError } = await query;
+
+    if (previousError) {
+      console.error("previous history load error", previousError.message);
+      return [];
+    }
+
+    const latestByDate = new Map<string, PreviousWorkoutSession>();
+
+    for (const session of (data ?? []) as PreviousWorkoutSession[]) {
+      if (!latestByDate.has(session.session_date)) {
+        latestByDate.set(session.session_date, session);
+      }
+    }
+
+    const effectiveSessions = Array.from(latestByDate.values());
+    const previousSets = effectiveSessions.flatMap((session) =>
+      (session.workout_sets ?? [])
+        .filter((set) => set.exercise_name === exerciseName)
+        .sort(
+          (a, b) =>
+            (a.exercise_order ?? 0) - (b.exercise_order ?? 0) ||
+            a.set_order - b.set_order
+        )
+        .map((set) => ({
+          id: set.id,
+          session_id: session.id,
+          exercise_name: set.exercise_name,
+          weight: set.weight,
+          reps: set.reps,
+          set_order: set.set_order,
+          exercise_order: set.exercise_order,
+          created_at: set.created_at,
+          session_date: session.session_date,
+          session_created_at: session.created_at
+        }))
+    );
+    const previousSessionGroups = groupPreviousSets(previousSets);
+    const previousSetsShown = previousSessionGroups.flatMap((session) => session.sets);
+    const previousSessionsUsed = previousSessionGroups.map((session) => ({
+      session_id: session.sessionId,
+      session_date: session.sessionDate,
+      exercise_name: exerciseName
+    }));
+
+    console.log("previous sessions used", previousSessionsUsed);
+    console.log(
+      "previous sets shown",
+      previousSetsShown.map((set) => ({
+        session_id: set.session_id,
+        session_date: set.session_date,
+        weight: Number(set.weight),
+        reps: set.reps,
+        set_order: set.set_order
+      }))
+    );
+
+    return previousSetsShown;
   }
 
   async function buildBlocksFromSets(
     sets: ExistingWorkoutSet[],
     exerciseList: Exercise[],
-    excludeSessionId: string
+    excludeSessionId: string,
+    referenceDate: string,
+    requestUserId?: string
   ) {
     const grouped = new Map<string, ExistingWorkoutSet[]>();
 
@@ -164,7 +264,11 @@ function NewWorkoutPageContent() {
     return Promise.all(
       Array.from(grouped.entries()).map(async ([name, groupedSets]) => {
         const matchedExercise = exerciseList.find((exercise) => exercise.name === name);
-        const previousSets = await fetchPreviousSets(name, excludeSessionId);
+        const previousSets = await fetchPreviousSets(name, {
+          excludeSessionId,
+          referenceDate,
+          requestUserId
+        });
 
         return {
           localId: createLocalId(),
@@ -182,7 +286,11 @@ function NewWorkoutPageContent() {
     );
   }
 
-  async function loadSessionById(sessionId: string, exerciseList = exercises) {
+  async function loadSessionById(
+    sessionId: string,
+    exerciseList = exercises,
+    requestUserId = userId
+  ) {
     setError("");
 
     const { data, error: sessionError } = await supabase
@@ -211,10 +319,22 @@ function NewWorkoutPageContent() {
     setEditingSessionId(session.id);
     setEditingAiReportStatus(session.ai_report_status ?? "not_generated");
     setSessionDate(session.session_date);
-    setWorkoutExercises(await buildBlocksFromSets(session.workout_sets ?? [], exerciseList, session.id));
+    setWorkoutExercises(
+      await buildBlocksFromSets(
+        session.workout_sets ?? [],
+        exerciseList,
+        session.id,
+        session.session_date,
+        requestUserId
+      )
+    );
   }
 
-  async function loadSessionByDate(date: string, exerciseList = exercises) {
+  async function loadSessionByDate(
+    date: string,
+    exerciseList = exercises,
+    requestUserId = userId
+  ) {
     setError("");
 
     const { data, error: sessionError } = await supabase
@@ -251,7 +371,15 @@ function NewWorkoutPageContent() {
 
     setEditingSessionId(session.id);
     setEditingAiReportStatus(session.ai_report_status ?? "not_generated");
-    setWorkoutExercises(await buildBlocksFromSets(session.workout_sets ?? [], exerciseList, session.id));
+    setWorkoutExercises(
+      await buildBlocksFromSets(
+        session.workout_sets ?? [],
+        exerciseList,
+        session.id,
+        session.session_date,
+        requestUserId
+      )
+    );
   }
 
   useEffect(() => {
@@ -312,10 +440,10 @@ function NewWorkoutPageContent() {
       setFocusExercise(queryFocusExercise);
 
       if (querySessionId) {
-        await loadSessionById(querySessionId, loadedExercises);
+        await loadSessionById(querySessionId, loadedExercises, user.id);
       } else {
         setSessionDate(queryDate);
-        await loadSessionByDate(queryDate, loadedExercises);
+        await loadSessionByDate(queryDate, loadedExercises, user.id);
       }
 
       setCatalogLoading(false);
@@ -380,7 +508,11 @@ function NewWorkoutPageContent() {
     setPickerOpen(false);
     setExerciseSearch("");
 
-    const previousSets = await fetchPreviousSets(exercise.name, editingSessionId || undefined);
+    const previousSets = await fetchPreviousSets(exercise.name, {
+      excludeSessionId: editingSessionId || undefined,
+      referenceDate: sessionDate,
+      requestUserId: userId
+    });
 
     setWorkoutExercises((current) =>
       current.map((item) =>
