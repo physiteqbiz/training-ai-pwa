@@ -108,6 +108,10 @@ h3 {
   padding: 16px;
 }
 
+.compact-panel {
+  gap: 10px;
+}
+
 details.panel:not([open]) > :not(summary) {
   display: none;
 }
@@ -137,6 +141,11 @@ summary {
 .field span {
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+.field-hint {
+  color: var(--muted);
+  font-size: 0.82rem;
 }
 
 .input {

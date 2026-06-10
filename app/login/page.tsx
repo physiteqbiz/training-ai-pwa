@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
@@ -98,9 +99,16 @@ export default function LoginPage() {
           {loading ? "ログイン中..." : "ログイン"}
         </button>
         <p className="muted">
-          アカウント作成がまだの場合は、管理者から発行されたログイン情報を使用してください。
+          登録済みのメールアドレスとパスワードでログインしてください。
         </p>
       </form>
+
+      <section className="panel compact-panel">
+        <p className="muted">アカウントをお持ちでない方</p>
+        <Link className="button secondary full" href="/signup">
+          アカウント作成はこちら
+        </Link>
+      </section>
 
       {message ? <div className="status">{message}</div> : null}
       {error ? <div className="status error">{error}</div> : null}
