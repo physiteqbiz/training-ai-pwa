@@ -15,7 +15,8 @@
     "next": "^15.3.3",
     "openai": "^4.103.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "stripe": "^22.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.21",

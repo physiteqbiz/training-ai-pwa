@@ -4,6 +4,11 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import {
+  type AiQuotaUsage,
+  type BillingProfile,
+  normalizeAiQuota
+} from "@/lib/billing";
 import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
 
 type WorkoutSet = {
@@ -152,7 +157,13 @@ export default function ReportPage() {
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState("");
+  const [billingProfile, setBillingProfile] = useState<BillingProfile | null>(null);
+  const [usageOverride, setUsageOverride] = useState<AiQuotaUsage | null>(null);
   const reportV2 = useMemo(() => normalizeV2Report(report?.raw_json), [report]);
+  const aiQuota = useMemo(
+    () => usageOverride ?? normalizeAiQuota(billingProfile),
+    [billingProfile, usageOverride]
+  );
 
   const exerciseSummaries = useMemo(() => {
     const grouped = new Map<string, WorkoutSet[]>();
@@ -219,18 +230,25 @@ export default function ReportPage() {
       return;
     }
 
-    const { data, error: loadError } = await supabase
-      .from("workout_sessions")
-      .select(
-        "id, session_date, title, ai_report_status, workout_sets(id, exercise_name, weight, reps, set_order, exercise_order)"
-      )
-      .eq("id", sessionId)
-      .single();
+    const [sessionResult, billingResult] = await Promise.all([
+      supabase
+        .from("workout_sessions")
+        .select(
+          "id, session_date, title, ai_report_status, workout_sets(id, exercise_name, weight, reps, set_order, exercise_order)"
+        )
+        .eq("id", sessionId)
+        .single(),
+      supabase
+        .from("profiles")
+        .select("plan, subscription_status, ai_quota_monthly, ai_quota_used, ai_quota_period")
+        .eq("id", user.id)
+        .maybeSingle()
+    ]);
 
-    if (loadError) {
-      setError(loadError.message);
+    if (sessionResult.error) {
+      setError(sessionResult.error.message);
     } else {
-      const detail = data as SessionDetail;
+      const detail = sessionResult.data as SessionDetail;
       setSession(detail);
       const latestReport = await fetchLatestReport();
       setReport(
@@ -238,6 +256,11 @@ export default function ReportPage() {
           ? latestReport
           : null
       );
+    }
+
+    if (!billingResult.error) {
+      setBillingProfile((billingResult.data as BillingProfile | null) ?? null);
+      setUsageOverride(null);
     }
 
     setLoading(false);
@@ -265,10 +288,14 @@ export default function ReportPage() {
 
     console.log("ai report response status", response.status);
 
-    let payload: { report?: AiReport; error?: string };
+    let payload: { report?: AiReport; usage?: AiQuotaUsage; error?: string };
 
     try {
-      payload = (await response.json()) as { report?: AiReport; error?: string };
+      payload = (await response.json()) as {
+        report?: AiReport;
+        usage?: AiQuotaUsage;
+        error?: string;
+      };
     } catch {
       payload = { error: "AI診断APIのレスポンスをJSONとして読めませんでした。" };
     }
@@ -276,6 +303,9 @@ export default function ReportPage() {
     console.log("ai report response body", payload);
 
     if (!response.ok) {
+      if (payload.usage) {
+        setUsageOverride(payload.usage);
+      }
       setError(payload.error ?? "AI診断の生成に失敗しました。");
       setGenerating(false);
       return;
@@ -301,6 +331,9 @@ export default function ReportPage() {
     setSession((current) =>
       current ? { ...current, ai_report_status: "generated" } : current
     );
+    if (payload.usage) {
+      setUsageOverride(payload.usage);
+    }
     setGenerating(false);
     router.refresh();
   }, [fetchLatestReport, router, sessionId, supabase]);
@@ -319,6 +352,26 @@ export default function ReportPage() {
 
       {loading ? <div className="status">読込中です。</div> : null}
       {error ? <div className="status error">{error}</div> : null}
+
+      <section className="panel compact-panel">
+        <div className="row">
+          <h2>AI診断 利用状況</h2>
+          <span className="status-badge">{aiQuota.planLabel}</span>
+        </div>
+        <p className="muted">
+          AI診断 今月 {aiQuota.aiQuotaUsed} / {aiQuota.aiQuotaMonthly}回
+        </p>
+        {aiQuota.isQuotaExceeded ? (
+          <div className="stack">
+            <div className="status">
+              今月のAI診断回数を使い切りました。Proにすると月30回まで利用できます。
+            </div>
+            <Link className="button full" href="/pricing">
+              Proを見る
+            </Link>
+          </div>
+        ) : null}
+      </section>
 
       {session ? (
         <section className="panel">
@@ -347,7 +400,7 @@ export default function ReportPage() {
           <button
             className="button full"
             type="button"
-            disabled={generating || !session}
+            disabled={generating || !session || aiQuota.isQuotaExceeded}
             onClick={generateReport}
           >
             {generating ? "診断生成中" : generateButtonLabel}

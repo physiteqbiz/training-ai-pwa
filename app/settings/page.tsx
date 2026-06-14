@@ -1,8 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
+import { type BillingProfile, normalizeAiQuota } from "@/lib/billing";
 import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
 
 type TrainingExperience = "" | "beginner" | "intermediate" | "advanced";
@@ -79,11 +81,22 @@ export default function SettingsPage() {
   const [muscleMassKg, setMuscleMassKg] = useState("");
   const [measurementDevice, setMeasurementDevice] = useState<MeasurementDevice>("");
   const [measurementMemo, setMeasurementMemo] = useState("");
+  const [billingProfile, setBillingProfile] = useState<BillingProfile | null>(null);
   const [loading, setLoading] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
   const [savingMeasurement, setSavingMeasurement] = useState(false);
+  const [openingPortal, setOpeningPortal] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const aiQuota = useMemo(() => normalizeAiQuota(billingProfile), [billingProfile]);
+
+  useEffect(() => {
+    const checkout = new URLSearchParams(window.location.search).get("checkout");
+
+    if (checkout === "success") {
+      setMessage("決済が完了した場合、Webhook反映後にPro表示へ更新されます。");
+    }
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -106,7 +119,7 @@ export default function SettingsPage() {
       setUserId(user.id);
       setEmail(user.email ?? "");
 
-      const [profileResult, measurementResult] = await Promise.all([
+      const [fitnessProfileResult, measurementResult, billingResult] = await Promise.all([
         supabase
           .from("user_fitness_profiles")
           .select("height_cm, training_experience, primary_goal, secondary_goal")
@@ -121,6 +134,11 @@ export default function SettingsPage() {
           .order("measured_at", { ascending: false })
           .order("created_at", { ascending: false })
           .limit(1)
+          .maybeSingle(),
+        supabase
+          .from("profiles")
+          .select("plan, subscription_status, ai_quota_monthly, ai_quota_used, ai_quota_period")
+          .eq("id", user.id)
           .maybeSingle()
       ]);
 
@@ -128,17 +146,19 @@ export default function SettingsPage() {
         return;
       }
 
-      if (profileResult.error) {
-        setError(profileResult.error.message);
-      } else if (profileResult.data) {
+      if (fitnessProfileResult.error) {
+        setError(fitnessProfileResult.error.message);
+      } else if (fitnessProfileResult.data) {
         setHeightCm(
-          profileResult.data.height_cm == null ? "" : String(Number(profileResult.data.height_cm))
+          fitnessProfileResult.data.height_cm == null
+            ? ""
+            : String(Number(fitnessProfileResult.data.height_cm))
         );
         setTrainingExperience(
-          (profileResult.data.training_experience ?? "") as TrainingExperience
+          (fitnessProfileResult.data.training_experience ?? "") as TrainingExperience
         );
-        setPrimaryGoal((profileResult.data.primary_goal ?? "") as Goal);
-        setSecondaryGoal((profileResult.data.secondary_goal ?? "") as Goal);
+        setPrimaryGoal((fitnessProfileResult.data.primary_goal ?? "") as Goal);
+        setSecondaryGoal((fitnessProfileResult.data.secondary_goal ?? "") as Goal);
       }
 
       if (measurementResult.error) {
@@ -166,6 +186,12 @@ export default function SettingsPage() {
         );
         setMeasurementDevice((measurement.measurement_device ?? "") as MeasurementDevice);
         setMeasurementMemo(measurement.memo ?? "");
+      }
+
+      if (billingResult.error) {
+        setError(billingResult.error.message);
+      } else {
+        setBillingProfile((billingResult.data as BillingProfile | null) ?? null);
       }
     }
 
@@ -255,6 +281,35 @@ export default function SettingsPage() {
     router.replace("/login");
   }
 
+  async function openPortal() {
+    setOpeningPortal(true);
+    setMessage("");
+    setError("");
+
+    try {
+      const response = await fetch("/api/stripe/create-portal-session", {
+        method: "POST"
+      });
+      const payload = (await response.json()) as { url?: string; error?: string };
+
+      if (response.status === 401) {
+        router.replace("/login");
+        return;
+      }
+
+      if (!response.ok || !payload.url) {
+        setError(payload.error ?? "支払い管理画面を開けませんでした。");
+        return;
+      }
+
+      window.location.href = payload.url;
+    } catch {
+      setError("支払い管理画面を開けませんでした。通信状態を確認してください。");
+    } finally {
+      setOpeningPortal(false);
+    }
+  }
+
   return (
     <div className="screen">
       <header className="screen-header">
@@ -264,6 +319,33 @@ export default function SettingsPage() {
 
       {message ? <div className="status success">{message}</div> : null}
       {error ? <div className="status error">{error}</div> : null}
+
+      <section className="panel">
+        <div className="row">
+          <div className="stack">
+            <p className="eyebrow">Plan</p>
+            <h2>現在のプラン: {aiQuota.planLabel}</h2>
+          </div>
+          <span className="status-badge">{aiQuota.planLabel}</span>
+        </div>
+        <div className="status">
+          AI診断 今月 {aiQuota.aiQuotaUsed} / {aiQuota.aiQuotaMonthly}回
+        </div>
+        {aiQuota.plan !== "pro" ? (
+          <Link className="button full" href="/pricing">
+            Proを見る
+          </Link>
+        ) : (
+          <button
+            className="button full"
+            disabled={openingPortal}
+            type="button"
+            onClick={() => void openPortal()}
+          >
+            {openingPortal ? "支払い管理を準備中" : "支払い管理"}
+          </button>
+        )}
+      </section>
 
       <section className="panel">
         <div className="stack">

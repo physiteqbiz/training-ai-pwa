@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 
+import {
+  ensureBillingProfile,
+  ensureCurrentAiQuota,
+  recordAiReportUsage
+} from "@/lib/ai-usage";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { requireEnv } from "@/lib/env";
@@ -547,6 +552,23 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Workout sets are empty." }, { status: 400 });
     }
 
+    const initialBillingProfile = await ensureBillingProfile(admin, user);
+    const { profile: billingProfile, usage } = await ensureCurrentAiQuota(
+      admin,
+      initialBillingProfile
+    );
+
+    if (usage.isQuotaExceeded) {
+      return NextResponse.json(
+        {
+          error:
+            "今月のAI診断回数を使い切りました。Proにすると月30回まで利用できます。",
+          usage
+        },
+        { status: 429 }
+      );
+    }
+
     const normalizedSets = sets.map(normalizeSet);
     const exerciseNames = [...new Set(sets.map((set) => set.exercise_name))];
     const { data: previousSessionsData } = await admin
@@ -759,7 +781,9 @@ export async function POST(request: Request) {
       );
     }
 
-    return NextResponse.json({ report: savedReport });
+    const updatedUsage = await recordAiReportUsage(admin, billingProfile, session.id);
+
+    return NextResponse.json({ report: savedReport, usage: updatedUsage });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unexpected error." },

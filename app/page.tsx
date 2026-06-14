@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
+import { type BillingProfile, normalizeAiQuota } from "@/lib/billing";
 import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
 
 type WorkoutSet = {
@@ -97,9 +98,11 @@ export default function HomePage() {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const [email, setEmail] = useState("");
   const [sessions, setSessions] = useState<WorkoutSession[]>([]);
+  const [billingProfile, setBillingProfile] = useState<BillingProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showInstallGuide, setShowInstallGuide] = useState(false);
+  const aiQuota = useMemo(() => normalizeAiQuota(billingProfile), [billingProfile]);
 
   useEffect(() => {
     const hidden = window.localStorage.getItem("hideInstallGuide") === "true";
@@ -125,23 +128,34 @@ export default function HomePage() {
 
       setEmail(user.email ?? "");
 
-      const { data, error: sessionsError } = await supabase
-        .from("workout_sessions")
-        .select(
-          "id, session_date, title, created_at, ai_report_status, workout_sets(exercise_name, weight, reps, set_order, exercise_order), ai_reports(id, created_at)"
-        )
-        .order("session_date", { ascending: false })
-        .order("created_at", { ascending: false })
-        .limit(8);
+      const [sessionsResult, billingResult] = await Promise.all([
+        supabase
+          .from("workout_sessions")
+          .select(
+            "id, session_date, title, created_at, ai_report_status, workout_sets(exercise_name, weight, reps, set_order, exercise_order), ai_reports(id, created_at)"
+          )
+          .order("session_date", { ascending: false })
+          .order("created_at", { ascending: false })
+          .limit(8),
+        supabase
+          .from("profiles")
+          .select("plan, subscription_status, ai_quota_monthly, ai_quota_used, ai_quota_period")
+          .eq("id", user.id)
+          .maybeSingle()
+      ]);
 
       if (!active) {
         return;
       }
 
-      if (sessionsError) {
-        setError(sessionsError.message);
+      if (sessionsResult.error) {
+        setError(sessionsResult.error.message);
       } else {
-        setSessions((data ?? []) as WorkoutSession[]);
+        setSessions((sessionsResult.data ?? []) as WorkoutSession[]);
+      }
+
+      if (!billingResult.error) {
+        setBillingProfile((billingResult.data as BillingProfile | null) ?? null);
       }
 
       setLoading(false);
@@ -181,6 +195,26 @@ export default function HomePage() {
       ) : (
         <div className="status">AI診断はセッション保存後に生成できます。</div>
       )}
+
+      <section className="panel compact-panel">
+        <div className="row">
+          <h2>AI診断</h2>
+          <span className="status-badge">{aiQuota.planLabel}</span>
+        </div>
+        <p className="muted">
+          AI診断 今月 {aiQuota.aiQuotaUsed} / {aiQuota.aiQuotaMonthly}回
+        </p>
+        {aiQuota.isQuotaExceeded ? (
+          <div className="stack">
+            <div className="status">
+              今月のAI診断回数を使い切りました。Proにすると月30回まで利用できます。
+            </div>
+            <Link className="button full" href="/pricing">
+              Proを見る
+            </Link>
+          </div>
+        ) : null}
+      </section>
 
       {showInstallGuide ? (
         <section className="install-card">
@@ -284,13 +318,18 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="panel">
-        <p className="eyebrow">Pro</p>
-        <h2>Pro機能は準備中</h2>
-        <p className="muted">
-          詳細分析、長期グラフ、メニュー自動調整を今後追加予定です。Stripeは未実装です。
-        </p>
-      </section>
+      {aiQuota.plan !== "pro" ? (
+        <section className="panel">
+          <p className="eyebrow">Pro</p>
+          <h2>AI診断を月30回まで</h2>
+          <p className="muted">
+            詳細AI診断v2、種目別診断、次回メニュー提案をWeb/PWA版のProで利用できます。
+          </p>
+          <Link className="button full" href="/pricing">
+            Proを見る
+          </Link>
+        </section>
+      ) : null}
     </div>
   );
 }
