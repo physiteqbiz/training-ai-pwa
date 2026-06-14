@@ -421,6 +421,33 @@ summary {
   gap: 8px;
 }
 
+.pricing-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.plan-card {
+  display: grid;
+  gap: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 16px;
+}
+
+.plan-card--featured {
+  border-color: #286748;
+  background: #101f18;
+}
+
+.feature-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--muted);
+}
+
 .step-list {
   display: grid;
   gap: 10px;
