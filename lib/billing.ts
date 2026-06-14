@@ -17,6 +17,9 @@ export type AiQuotaUsage = {
   aiQuotaUsed: number;
   aiQuotaMonthly: number;
   aiQuotaPeriod: string;
+  ai_quota_used: number;
+  ai_quota_monthly: number;
+  ai_quota_period: string;
   isQuotaExceeded: boolean;
 };
 
@@ -67,6 +70,9 @@ export function normalizeAiQuota(
     aiQuotaUsed,
     aiQuotaMonthly,
     aiQuotaPeriod,
+    ai_quota_used: aiQuotaUsed,
+    ai_quota_monthly: aiQuotaMonthly,
+    ai_quota_period: aiQuotaPeriod,
     isQuotaExceeded: aiQuotaUsed >= aiQuotaMonthly
   };
 }

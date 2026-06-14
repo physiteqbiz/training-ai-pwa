@@ -4,7 +4,6 @@ import {
   type AiQuotaUsage,
   type BillingProfile,
   FREE_AI_QUOTA_MONTHLY,
-  getAiQuotaMonthlyForPlan,
   getCurrentAiQuotaPeriod,
   getEffectivePlan,
   normalizeAiQuota
@@ -25,12 +24,32 @@ export type BillingProfileRow = BillingProfile & {
   current_period_end: string | null;
 };
 
+export type RecordAiReportUsageResult = {
+  usage: AiQuotaUsage;
+  usageLogInserted: boolean;
+};
+
 type RecordAiUsageRow = {
   plan: "free" | "pro";
   ai_quota_used: number;
   ai_quota_monthly: number;
   ai_quota_period: string;
 };
+
+export function summarizeSupabaseError(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return { message: error instanceof Error ? error.message : "Unknown error." };
+  }
+
+  const record = error as Record<string, unknown>;
+
+  return {
+    message: String(record.message ?? "Unknown error."),
+    code: record.code ? String(record.code) : undefined,
+    details: record.details ? String(record.details) : undefined,
+    hint: record.hint ? String(record.hint) : undefined
+  };
+}
 
 function toAiQuotaUsage(row: RecordAiUsageRow): AiQuotaUsage {
   const aiQuotaUsed = Number(row.ai_quota_used ?? 0);
@@ -42,6 +61,9 @@ function toAiQuotaUsage(row: RecordAiUsageRow): AiQuotaUsage {
     aiQuotaUsed,
     aiQuotaMonthly,
     aiQuotaPeriod: row.ai_quota_period,
+    ai_quota_used: aiQuotaUsed,
+    ai_quota_monthly: aiQuotaMonthly,
+    ai_quota_period: row.ai_quota_period,
     isQuotaExceeded: aiQuotaUsed >= aiQuotaMonthly
   };
 }
@@ -54,6 +76,10 @@ export async function getBillingProfile(admin: SupabaseAdminClient, userId: stri
     .maybeSingle();
 
   if (error) {
+    console.error("quota profile fetch error", {
+      userId,
+      error: summarizeSupabaseError(error)
+    });
     throw error;
   }
 
@@ -84,6 +110,11 @@ export async function ensureBillingProfile(admin: SupabaseAdminClient, user: Use
     .single();
 
   if (error || !data) {
+    console.error("quota profile fetch error", {
+      userId: user.id,
+      operation: "create_profile",
+      error: error ? summarizeSupabaseError(error) : { message: "Profile insert returned no data." }
+    });
     throw error ?? new Error("Failed to create billing profile.");
   }
 
@@ -121,6 +152,12 @@ export async function ensureCurrentAiQuota(
     .single();
 
   if (error || !data) {
+    console.error("quota reset error", {
+      userId: profile.id,
+      period: usage.aiQuotaPeriod,
+      plan: usage.plan,
+      error: error ? summarizeSupabaseError(error) : { message: "Quota reset returned no data." }
+    });
     throw error ?? new Error("Failed to refresh AI quota.");
   }
 
@@ -136,22 +173,120 @@ export async function recordAiReportUsage(
   admin: SupabaseAdminClient,
   profile: BillingProfileRow,
   sessionId: string
-) {
-  const effectivePlan = getEffectivePlan(profile);
-  const { data, error } = await admin
-    .rpc("record_ai_usage", {
-      p_user_id: profile.id,
-      p_session_id: sessionId,
-      p_usage_type: "ai_report",
-      p_period: getCurrentAiQuotaPeriod(),
-      p_plan: effectivePlan,
-      p_ai_quota_monthly: getAiQuotaMonthlyForPlan(effectivePlan)
-    })
-    .single();
+): Promise<RecordAiReportUsageResult> {
+  const latestProfile = await getBillingProfile(admin, profile.id);
 
-  if (error || !data) {
-    throw error ?? new Error("Failed to record AI usage.");
+  if (!latestProfile) {
+    const error = new Error("Billing profile was not found while recording AI usage.");
+    console.error("quota profile fetch error", {
+      userId: profile.id,
+      sessionId,
+      error: { message: error.message }
+    });
+    throw error;
   }
 
-  return toAiQuotaUsage(data as RecordAiUsageRow);
+  const { profile: currentProfile, usage } = await ensureCurrentAiQuota(admin, latestProfile);
+
+  if (usage.isQuotaExceeded) {
+    const error = new Error("AI quota was exceeded before increment.");
+    console.error("quota increment error", {
+      userId: currentProfile.id,
+      sessionId,
+      period: usage.aiQuotaPeriod,
+      used: usage.aiQuotaUsed,
+      monthly: usage.aiQuotaMonthly,
+      error: { message: error.message }
+    });
+    throw error;
+  }
+
+  const nextUsed = usage.aiQuotaUsed + 1;
+  const { data: updatedProfile, error: incrementError } = await admin
+    .from("profiles")
+    .update({
+      ai_quota_used: nextUsed,
+      ai_quota_monthly: usage.aiQuotaMonthly,
+      ai_quota_period: usage.aiQuotaPeriod
+    })
+    .eq("id", currentProfile.id)
+    .select("plan, subscription_status, ai_quota_monthly, ai_quota_used, ai_quota_period")
+    .single();
+
+  if (incrementError || !updatedProfile) {
+    console.error("quota increment error", {
+      userId: currentProfile.id,
+      sessionId,
+      period: usage.aiQuotaPeriod,
+      usedBefore: usage.aiQuotaUsed,
+      nextUsed,
+      error: incrementError
+        ? summarizeSupabaseError(incrementError)
+        : { message: "Quota increment returned no data." }
+    });
+    throw incrementError ?? new Error("Failed to increment AI quota.");
+  }
+
+  const effectivePlan = getEffectivePlan(updatedProfile as BillingProfile);
+  const logPeriod = String(updatedProfile.ai_quota_period ?? usage.aiQuotaPeriod);
+  let usageLogInserted = true;
+  const { error: logError } = await admin.from("ai_usage_logs").insert({
+    user_id: currentProfile.id,
+    session_id: sessionId,
+    usage_type: "ai_report",
+    plan: effectivePlan,
+    period: logPeriod,
+    created_at: new Date().toISOString()
+  });
+
+  if (logError) {
+    console.error("ai_usage_logs insert error", {
+      userId: currentProfile.id,
+      sessionId,
+      period: logPeriod,
+      plan: effectivePlan,
+      error: summarizeSupabaseError(logError)
+    });
+    usageLogInserted = false;
+  }
+
+  const refreshedProfile = await getBillingProfile(admin, currentProfile.id);
+
+  if (!refreshedProfile) {
+    const error = new Error("Billing profile was not found after AI usage update.");
+    console.error("quota profile fetch error", {
+      userId: currentProfile.id,
+      sessionId,
+      operation: "fetch_after_increment",
+      error: { message: error.message }
+    });
+    throw error;
+  }
+
+  const latestUsage = normalizeAiQuota(refreshedProfile);
+
+  console.log("usage update success", {
+    userId: currentProfile.id,
+    sessionId,
+    plan: latestUsage.plan,
+    aiQuotaUsed: latestUsage.aiQuotaUsed,
+    aiQuotaMonthly: latestUsage.aiQuotaMonthly,
+    aiQuotaPeriod: latestUsage.aiQuotaPeriod,
+    usageLogInserted
+  });
+  console.log("latest usage returned", {
+    userId: currentProfile.id,
+    sessionId,
+    usage: {
+      plan: latestUsage.plan,
+      ai_quota_used: latestUsage.ai_quota_used,
+      ai_quota_monthly: latestUsage.ai_quota_monthly,
+      ai_quota_period: latestUsage.ai_quota_period
+    }
+  });
+
+  return {
+    usage: latestUsage,
+    usageLogInserted
+  };
 }

@@ -106,6 +106,9 @@ declare
   v_plan text := case when p_plan = 'pro' then 'pro' else 'free' end;
   v_monthly integer := case when p_plan = 'pro' then 30 else 3 end;
   v_used integer;
+  v_next_used integer;
+  v_next_monthly integer;
+  v_next_period text;
 begin
   if p_ai_quota_monthly is not null and p_ai_quota_monthly > 0 then
     v_monthly := p_ai_quota_monthly;
@@ -120,34 +123,44 @@ begin
     raise exception 'profile_not_found';
   end if;
 
-  update public.profiles
+  update public.profiles as p
   set
     ai_quota_period = v_period,
     ai_quota_monthly = v_monthly,
     ai_quota_used = case
-      when ai_quota_period is distinct from v_period then 0
-      else ai_quota_used
+      when p.ai_quota_period is distinct from v_period then 0
+      else p.ai_quota_used
     end
-  where id = p_user_id
-  returning public.profiles.ai_quota_used
+  where p.id = p_user_id
+  returning p.ai_quota_used
   into v_used;
 
   if v_used >= v_monthly then
     raise exception 'ai_quota_exceeded';
   end if;
 
-  update public.profiles
-  set ai_quota_used = ai_quota_used + 1
-  where id = p_user_id
-  returning public.profiles.ai_quota_used,
-    public.profiles.ai_quota_monthly,
-    public.profiles.ai_quota_period
-  into ai_quota_used, ai_quota_monthly, ai_quota_period;
+  update public.profiles as p
+  set ai_quota_used = p.ai_quota_used + 1
+  where p.id = p_user_id
+  returning p.ai_quota_used,
+    p.ai_quota_monthly,
+    p.ai_quota_period
+  into v_next_used, v_next_monthly, v_next_period;
 
-  insert into public.ai_usage_logs (user_id, session_id, usage_type, plan, period)
-  values (p_user_id, p_session_id, coalesce(nullif(p_usage_type, ''), 'ai_report'), v_plan, v_period);
+  insert into public.ai_usage_logs (user_id, session_id, usage_type, plan, period, created_at)
+  values (
+    p_user_id,
+    p_session_id,
+    coalesce(nullif(p_usage_type, ''), 'ai_report'),
+    v_plan,
+    v_period,
+    now()
+  );
 
   plan := v_plan;
+  ai_quota_used := v_next_used;
+  ai_quota_monthly := v_next_monthly;
+  ai_quota_period := v_next_period;
   return next;
 end;
 $$;

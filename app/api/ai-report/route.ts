@@ -4,7 +4,8 @@ import OpenAI from "openai";
 import {
   ensureBillingProfile,
   ensureCurrentAiQuota,
-  recordAiReportUsage
+  recordAiReportUsage,
+  summarizeSupabaseError
 } from "@/lib/ai-usage";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -762,6 +763,13 @@ export async function POST(request: Request) {
       .single();
 
     if (saveError || !savedReport) {
+      console.error("ai report save error", {
+        userId: user.id,
+        sessionId: session.id,
+        error: saveError
+          ? summarizeSupabaseError(saveError)
+          : { message: "AI report save returned no data." }
+      });
       return NextResponse.json(
         { error: saveError?.message ?? "Failed to save AI report." },
         { status: 500 }
@@ -775,16 +783,60 @@ export async function POST(request: Request) {
       .eq("user_id", user.id);
 
     if (statusError) {
+      console.error("ai_report_status update error", {
+        userId: user.id,
+        sessionId: session.id,
+        reportId: savedReport.id,
+        error: summarizeSupabaseError(statusError)
+      });
       return NextResponse.json(
         { error: statusError.message },
         { status: 500 }
       );
     }
 
-    const updatedUsage = await recordAiReportUsage(admin, billingProfile, session.id);
+    let usageResult;
 
-    return NextResponse.json({ report: savedReport, usage: updatedUsage });
+    try {
+      usageResult = await recordAiReportUsage(admin, billingProfile, session.id);
+    } catch (usageError) {
+      console.log("usage update partial failure", {
+        userId: user.id,
+        sessionId: session.id,
+        reportId: savedReport.id
+      });
+      console.error("ai usage update failed after report saved", {
+        userId: user.id,
+        sessionId: session.id,
+        reportId: savedReport.id,
+        error: summarizeSupabaseError(usageError)
+      });
+
+      return NextResponse.json(
+        {
+          ok: false,
+          partial_success: true,
+          error: "usage_update_failed",
+          message:
+            "AI診断は保存されましたが、利用回数の更新に失敗しました。",
+          report: savedReport,
+          report_saved: true
+        },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      ok: true,
+      report: savedReport,
+      usage: usageResult.usage,
+      usage_log_inserted: usageResult.usageLogInserted
+    });
   } catch (error) {
+    console.error("ai report api error", {
+      error: summarizeSupabaseError(error)
+    });
+
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unexpected error." },
       { status: 500 }

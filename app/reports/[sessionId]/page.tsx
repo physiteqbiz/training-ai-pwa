@@ -288,13 +288,25 @@ export default function ReportPage() {
 
     console.log("ai report response status", response.status);
 
-    let payload: { report?: AiReport; usage?: AiQuotaUsage; error?: string };
+    let payload: {
+      ok?: boolean;
+      partial_success?: boolean;
+      report?: AiReport;
+      usage?: AiQuotaUsage;
+      error?: string;
+      message?: string;
+      report_saved?: boolean;
+    };
 
     try {
       payload = (await response.json()) as {
+        ok?: boolean;
+        partial_success?: boolean;
         report?: AiReport;
         usage?: AiQuotaUsage;
         error?: string;
+        message?: string;
+        report_saved?: boolean;
       };
     } catch {
       payload = { error: "AI診断APIのレスポンスをJSONとして読めませんでした。" };
@@ -306,7 +318,32 @@ export default function ReportPage() {
       if (payload.usage) {
         setUsageOverride(payload.usage);
       }
+      const savedReport = hasReportContent(payload.report)
+        ? payload.report ?? null
+        : await fetchLatestReport();
+
+      if (hasReportContent(savedReport)) {
+        setReport(savedReport);
+        setSession((current) =>
+          current ? { ...current, ai_report_status: "generated" } : current
+        );
+        setError(
+          payload.partial_success
+            ? "AI診断は保存済みです。利用回数の更新に失敗したため、反映後に再読み込みしてください。"
+            : ""
+        );
+        setGenerating(false);
+        router.refresh();
+        return;
+      }
+
       setError(payload.error ?? "AI診断の生成に失敗しました。");
+      setGenerating(false);
+      return;
+    }
+
+    if (payload.ok === false || payload.partial_success) {
+      setError(payload.message ?? payload.error ?? "AI診断の生成に失敗しました。");
       setGenerating(false);
       return;
     }
@@ -334,6 +371,7 @@ export default function ReportPage() {
     if (payload.usage) {
       setUsageOverride(payload.usage);
     }
+    setError("");
     setGenerating(false);
     router.refresh();
   }, [fetchLatestReport, router, sessionId, supabase]);
