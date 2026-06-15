@@ -110,6 +110,14 @@ export default function LoginPage() {
         </Link>
       </section>
 
+      <p className="fine-print">
+        登録またはログインすることで、
+        <Link href="/terms">利用規約</Link>
+        および
+        <Link href="/privacy">プライバシーポリシー</Link>
+        に同意したものとみなされます。
+      </p>
+
       {message ? <div className="status">{message}</div> : null}
       {error ? <div className="status error">{error}</div> : null}
     </div>

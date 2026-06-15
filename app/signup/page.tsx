@@ -136,6 +136,14 @@ export default function SignupPage() {
       <Link className="button secondary full" href="/login">
         ログインへ戻る
       </Link>
+
+      <p className="fine-print">
+        登録またはログインすることで、
+        <Link href="/terms">利用規約</Link>
+        および
+        <Link href="/privacy">プライバシーポリシー</Link>
+        に同意したものとみなされます。
+      </p>
     </div>
   );
 }

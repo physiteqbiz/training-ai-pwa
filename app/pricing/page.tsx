@@ -103,6 +103,9 @@ export default function PricingPage() {
         <p className="muted">
           Stripe決済完了後、WebhookでDBに反映された時点でProとして扱います。
         </p>
+        <p className="fine-print">
+          ProはAI診断回数と詳細機能を拡張するプランです。AI診断は医療行為ではありません。決済処理はStripeを通じて行われます。
+        </p>
       </section>
     </div>
   );

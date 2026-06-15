@@ -533,6 +533,17 @@ export default function SettingsPage() {
           ログアウト
         </button>
       </section>
+
+      <section className="panel compact-panel">
+        <p className="eyebrow">Support</p>
+        <h2>サポートとポリシー</h2>
+        <div className="legal-links">
+          <Link href="/terms">利用規約</Link>
+          <Link href="/privacy">プライバシーポリシー</Link>
+          <Link href="/account/delete">アカウント削除依頼</Link>
+          <Link href="/contact">お問い合わせ</Link>
+        </div>
+      </section>
     </div>
   );
 }

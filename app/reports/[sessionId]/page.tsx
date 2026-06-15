@@ -556,6 +556,10 @@ export default function ReportPage() {
         </section>
       ) : null}
 
+      <p className="fine-print">
+        AI診断はトレーニング記録に基づく一般的なフィットネス助言です。痛みや体調不良がある場合は専門家に相談してください。
+      </p>
+
       <Link className="button secondary full" href="/">
         ホームへ戻る
       </Link>

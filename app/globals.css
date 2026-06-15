@@ -148,6 +148,19 @@ summary {
   font-size: 0.82rem;
 }
 
+.fine-print {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+
+.fine-print a,
+.legal-content a,
+.legal-links a {
+  color: var(--accent);
+  font-weight: 800;
+}
+
 .input {
   width: 100%;
   min-height: 50px;
@@ -166,6 +179,23 @@ summary {
 .textarea {
   min-height: 96px;
   resize: vertical;
+}
+
+.check-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  align-items: start;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.check-row input {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  accent-color: var(--accent);
 }
 
 .button {
@@ -446,6 +476,32 @@ summary {
   margin: 0;
   padding-left: 1.2rem;
   color: var(--muted);
+}
+
+.legal-page {
+  gap: 16px;
+}
+
+.legal-content {
+  line-height: 1.75;
+}
+
+.legal-content h2 {
+  color: var(--accent-2);
+  font-size: 1.05rem;
+  padding-top: 6px;
+}
+
+.legal-content ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+.legal-links {
+  display: grid;
+  gap: 10px;
 }
 
 .step-list {
