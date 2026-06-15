@@ -82,6 +82,7 @@ export default function SettingsPage() {
   const [measurementDevice, setMeasurementDevice] = useState<MeasurementDevice>("");
   const [measurementMemo, setMeasurementMemo] = useState("");
   const [billingProfile, setBillingProfile] = useState<BillingProfile | null>(null);
+  const [checkingAuth, setCheckingAuth] = useState(true);
   const [loading, setLoading] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
   const [savingMeasurement, setSavingMeasurement] = useState(false);
@@ -89,6 +90,18 @@ export default function SettingsPage() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const aiQuota = useMemo(() => normalizeAiQuota(billingProfile), [billingProfile]);
+
+  useEffect(() => {
+    if (!checkingAuth) {
+      return;
+    }
+
+    document.body.classList.add("hide-nav");
+
+    return () => {
+      document.body.classList.remove("hide-nav");
+    };
+  }, [checkingAuth]);
 
   useEffect(() => {
     const checkout = new URLSearchParams(window.location.search).get("checkout");
@@ -193,6 +206,8 @@ export default function SettingsPage() {
       } else {
         setBillingProfile((billingResult.data as BillingProfile | null) ?? null);
       }
+
+      setCheckingAuth(false);
     }
 
     void load();
@@ -308,6 +323,14 @@ export default function SettingsPage() {
     } finally {
       setOpeningPortal(false);
     }
+  }
+
+  if (checkingAuth) {
+    return (
+      <div className="screen settings-auth-check">
+        <div className="status">ログイン状態を確認中です...</div>
+      </div>
+    );
   }
 
   return (

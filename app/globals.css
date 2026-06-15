@@ -675,3 +675,7 @@ summary {
 .hide-nav .bottom-nav {
   display: none;
 }
+
+.app-frame:has(.settings-auth-check) + .bottom-nav {
+  display: none;
+}
