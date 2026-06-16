@@ -18,7 +18,7 @@ export function kgToDisplayWeight(weightKg: number | string, unit: WeightUnit) {
     return 0;
   }
 
-  return roundToDecimals(unit === "lb" ? kg * KG_TO_LB : kg, unit === "lb" ? 1 : 2);
+  return roundDisplayWeight(unit === "lb" ? kg * KG_TO_LB : kg);
 }
 
 export function displayWeightToKg(displayWeight: number | string, unit: WeightUnit) {
@@ -38,7 +38,7 @@ export function formatWeightNumber(value: number | string) {
     return "0";
   }
 
-  const rounded = roundToDecimals(numeric, 2);
+  const rounded = roundDisplayWeight(numeric);
 
   if (Number.isInteger(rounded)) {
     return String(rounded);
@@ -49,6 +49,10 @@ export function formatWeightNumber(value: number | string) {
 
 export function formatWeight(weightKg: number | string, unit: WeightUnit) {
   return `${formatWeightNumber(kgToDisplayWeight(weightKg, unit))}${unit}`;
+}
+
+function roundDisplayWeight(value: number) {
+  return roundToDecimals(value, 1);
 }
 
 function roundToDecimals(value: number, decimals: number) {
