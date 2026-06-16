@@ -10,6 +10,12 @@ import {
   normalizeAiQuota
 } from "@/lib/billing";
 import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
+import {
+  formatWeight,
+  formatWeightNumber,
+  normalizeWeightUnit,
+  type WeightUnit
+} from "@/lib/weight-unit";
 
 type WorkoutSet = {
   id: string;
@@ -37,6 +43,30 @@ type SuggestedSet = {
   reps: number;
   sets: number;
   note: string;
+};
+
+type TargetLine = {
+  weight: number;
+  reps: string;
+  sets: string;
+  note: string;
+  text: string;
+};
+
+type SuggestedTargets = {
+  strength_target: TargetLine[];
+  hypertrophy_target: TargetLine[];
+  fatigue_management_target: TargetLine[];
+};
+
+type ExerciseReportMeta = {
+  estimatedOneRepMax: number | null;
+  workingSetCount: number;
+  assistedSetCount: number;
+  dropSetCount: number;
+  mainSetCount: number;
+  normalSetCount: number;
+  suggestedTargets: SuggestedTargets | null;
 };
 
 type ExerciseDiagnostic = {
@@ -91,6 +121,82 @@ function normalizeSuggestedSets(value: unknown): SuggestedSet[] {
       note: String(record.note ?? "")
     };
   });
+}
+
+function normalizeTargetLines(value: unknown): TargetLine[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.map((item) => {
+    const record = asRecord(item);
+    const displayUnit = normalizeWeightUnit(record.display_unit);
+    const weight = Number(record.display_weight ?? record.weight ?? 0);
+    const reps = String(record.reps ?? "");
+    const sets = String(record.sets ?? "");
+    const note = String(record.note ?? "");
+    const text = String(
+      record.text ??
+        `${formatWeightNumber(weight)}${displayUnit} × ${reps}回 × ${sets}セット`
+    );
+
+    return { weight, reps, sets, note, text };
+  });
+}
+
+function normalizeSuggestedTargets(value: unknown): SuggestedTargets | null {
+  const record = asRecord(value);
+  const targets = {
+    strength_target: normalizeTargetLines(record.strength_target),
+    hypertrophy_target: normalizeTargetLines(record.hypertrophy_target),
+    fatigue_management_target: normalizeTargetLines(record.fatigue_management_target)
+  };
+
+  return targets.strength_target.length ||
+    targets.hypertrophy_target.length ||
+    targets.fatigue_management_target.length
+    ? targets
+    : null;
+}
+
+function buildExerciseReportMeta(value: unknown) {
+  const raw = asRecord(value);
+  const computedAnalysis = asRecord(raw.computed_analysis);
+  const topLevelTargets = asRecord(raw.suggested_targets);
+  const exercises = Array.isArray(computedAnalysis.exercises_summary)
+    ? computedAnalysis.exercises_summary
+    : [];
+  const meta = new Map<string, ExerciseReportMeta>();
+
+  for (const item of exercises) {
+    const exercise = asRecord(item);
+    const exerciseName = String(exercise.exercise_name ?? "");
+
+    if (!exerciseName) {
+      continue;
+    }
+
+    const setTypeCounts = asRecord(exercise.set_type_counts);
+    const suggestedTargets =
+      normalizeSuggestedTargets(exercise.suggested_targets) ??
+      normalizeSuggestedTargets(topLevelTargets[exerciseName]);
+
+    meta.set(exerciseName, {
+      estimatedOneRepMax:
+        exercise.estimated_1rm_from_rm_eligible_sets === null ||
+        exercise.estimated_1rm_from_rm_eligible_sets === undefined
+          ? null
+          : Number(exercise.estimated_1rm_from_rm_eligible_sets),
+      workingSetCount: Number(exercise.working_set_count ?? 0),
+      assistedSetCount: Number(exercise.assisted_set_count ?? 0),
+      dropSetCount: Number(setTypeCounts.drop ?? 0),
+      mainSetCount: Number(setTypeCounts.main ?? 0),
+      normalSetCount: Number(setTypeCounts.normal ?? 0),
+      suggestedTargets
+    });
+  }
+
+  return meta;
 }
 
 function normalizeV2Report(value: unknown): AiReportV2 | null {
@@ -159,7 +265,12 @@ export default function ReportPage() {
   const [error, setError] = useState("");
   const [billingProfile, setBillingProfile] = useState<BillingProfile | null>(null);
   const [usageOverride, setUsageOverride] = useState<AiQuotaUsage | null>(null);
+  const [weightUnit, setWeightUnit] = useState<WeightUnit>("kg");
   const reportV2 = useMemo(() => normalizeV2Report(report?.raw_json), [report]);
+  const exerciseReportMeta = useMemo(
+    () => buildExerciseReportMeta(report?.raw_json),
+    [report]
+  );
   const aiQuota = useMemo(
     () => usageOverride ?? normalizeAiQuota(billingProfile),
     [billingProfile, usageOverride]
@@ -230,7 +341,7 @@ export default function ReportPage() {
       return;
     }
 
-    const [sessionResult, billingResult] = await Promise.all([
+    const [sessionResult, billingResult, inputSettingsResult] = await Promise.all([
       supabase
         .from("workout_sessions")
         .select(
@@ -242,6 +353,11 @@ export default function ReportPage() {
         .from("profiles")
         .select("plan, subscription_status, ai_quota_monthly, ai_quota_used, ai_quota_period")
         .eq("id", user.id)
+        .maybeSingle(),
+      supabase
+        .from("user_fitness_profiles")
+        .select("weight_unit")
+        .eq("user_id", user.id)
         .maybeSingle()
     ]);
 
@@ -261,6 +377,10 @@ export default function ReportPage() {
     if (!billingResult.error) {
       setBillingProfile((billingResult.data as BillingProfile | null) ?? null);
       setUsageOverride(null);
+    }
+
+    if (!inputSettingsResult.error && inputSettingsResult.data) {
+      setWeightUnit(normalizeWeightUnit(inputSettingsResult.data.weight_unit));
     }
 
     setLoading(false);
@@ -423,7 +543,7 @@ export default function ReportPage() {
                 </div>
                 <p>
                   {summary.sets
-                    .map((set) => `${Number(set.weight)}kg × ${set.reps}`)
+                    .map((set) => `${formatWeight(set.weight, weightUnit)} × ${set.reps}`)
                     .join(" / ")}
                 </p>
               </div>
@@ -468,42 +588,102 @@ export default function ReportPage() {
 
           <section className="stack">
             <h2>種目別診断</h2>
-            {reportV2.exercise_diagnostics.map((diagnostic) => (
-              <article className="exercise-diagnostic-card" key={diagnostic.exercise_name}>
-                <div className="row">
-                  <h3>{diagnostic.exercise_name}</h3>
-                  {diagnostic.label ? <span className="status-badge">{diagnostic.label}</span> : null}
-                </div>
-                <p>{diagnostic.analysis}</p>
-                {diagnostic.previous_comparison ? (
-                  <div className="status">
-                    <strong>前回比</strong>
-                    <p>{diagnostic.previous_comparison}</p>
+            {reportV2.exercise_diagnostics.map((diagnostic) => {
+              const meta = exerciseReportMeta.get(diagnostic.exercise_name);
+
+              return (
+                <article className="exercise-diagnostic-card" key={diagnostic.exercise_name}>
+                  <div className="row">
+                    <h3>{diagnostic.exercise_name}</h3>
+                    {diagnostic.label ? <span className="status-badge">{diagnostic.label}</span> : null}
                   </div>
-                ) : null}
-                {diagnostic.next_target ? (
-                  <div className="status">
-                    <strong>次回目標</strong>
-                    <p>{diagnostic.next_target}</p>
-                  </div>
-                ) : null}
-                {diagnostic.suggested_sets.length ? (
-                  <div className="stack">
-                    <h3>次回候補</h3>
-                    <div className="suggested-set-list">
-                      {diagnostic.suggested_sets.map((set, index) => (
-                        <div className="suggested-set" key={`${diagnostic.exercise_name}-${index}`}>
-                          <strong>
-                            {set.weight}kg × {set.reps}回 × {set.sets}セット
-                          </strong>
-                          {set.note ? <span>{set.note}</span> : null}
-                        </div>
-                      ))}
+                  {meta ? (
+                    <div className="metric-grid">
+                      <div>
+                        <span>推定1RM</span>
+                        <strong>
+                          {meta.estimatedOneRepMax === null
+                            ? "-"
+                            : formatWeight(meta.estimatedOneRepMax, weightUnit)}
+                        </strong>
+                      </div>
+                      <div>
+                        <span>メイン/通常</span>
+                        <strong>{meta.mainSetCount + meta.normalSetCount}セット</strong>
+                      </div>
+                      <div>
+                        <span>補助あり</span>
+                        <strong>{meta.assistedSetCount}セット</strong>
+                      </div>
+                      <div>
+                        <span>ドロップ</span>
+                        <strong>{meta.dropSetCount}セット</strong>
+                      </div>
                     </div>
-                  </div>
-                ) : null}
-              </article>
-            ))}
+                  ) : null}
+                  <p>{diagnostic.analysis}</p>
+                  {diagnostic.previous_comparison ? (
+                    <div className="status">
+                      <strong>前回比</strong>
+                      <p>{diagnostic.previous_comparison}</p>
+                    </div>
+                  ) : null}
+                  {diagnostic.next_target ? (
+                    <div className="status">
+                      <strong>次回目標</strong>
+                      <p>{diagnostic.next_target}</p>
+                    </div>
+                  ) : null}
+                  {diagnostic.suggested_sets.length ? (
+                    <div className="stack">
+                      <h3>次回候補</h3>
+                      <div className="suggested-set-list">
+                        {diagnostic.suggested_sets.map((set, index) => (
+                          <div className="suggested-set" key={`${diagnostic.exercise_name}-${index}`}>
+                            <strong>
+                              {formatWeightNumber(set.weight)}
+                              {weightUnit} × {set.reps}回 × {set.sets}セット
+                            </strong>
+                            {set.note ? <span>{set.note}</span> : null}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  {meta?.suggestedTargets ? (
+                    <div className="stack">
+                      <h3>目的別候補</h3>
+                      <div className="target-grid">
+                        <div className="target-card">
+                          <strong>筋力アップ優先</strong>
+                          {meta.suggestedTargets.strength_target.map((target, index) => (
+                            <p key={`strength-${diagnostic.exercise_name}-${index}`}>
+                              {target.text}
+                            </p>
+                          ))}
+                        </div>
+                        <div className="target-card">
+                          <strong>筋肥大優先</strong>
+                          {meta.suggestedTargets.hypertrophy_target.map((target, index) => (
+                            <p key={`hypertrophy-${diagnostic.exercise_name}-${index}`}>
+                              {target.text}
+                            </p>
+                          ))}
+                        </div>
+                        <div className="target-card">
+                          <strong>疲労管理</strong>
+                          {meta.suggestedTargets.fatigue_management_target.map((target, index) => (
+                            <p key={`fatigue-${diagnostic.exercise_name}-${index}`}>
+                              {target.text}
+                            </p>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                </article>
+              );
+            })}
           </section>
 
           {reportV2.goal_based_advice ? (

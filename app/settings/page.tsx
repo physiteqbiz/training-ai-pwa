@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { type BillingProfile, normalizeAiQuota } from "@/lib/billing";
 import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
+import { normalizeWeightUnit, type WeightUnit } from "@/lib/weight-unit";
 
 type TrainingExperience = "" | "beginner" | "intermediate" | "advanced";
 type Goal =
@@ -45,6 +46,13 @@ const measurementDeviceOptions: Array<{ value: MeasurementDevice; label: string 
   { value: "unknown", label: "不明" }
 ];
 
+const weightUnitOptions: Array<{ value: WeightUnit; label: string }> = [
+  { value: "kg", label: "kg" },
+  { value: "lb", label: "lb" }
+];
+
+const weightIncrementOptions = [1, 1.25, 2.5, 5];
+
 function todayString() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -61,6 +69,11 @@ function nullableNumber(value: string) {
 
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeWeightIncrement(value: unknown) {
+  const parsed = Number(value);
+  return weightIncrementOptions.includes(parsed) ? parsed : 2.5;
 }
 
 export default function SettingsPage() {
@@ -81,6 +94,8 @@ export default function SettingsPage() {
   const [muscleMassKg, setMuscleMassKg] = useState("");
   const [measurementDevice, setMeasurementDevice] = useState<MeasurementDevice>("");
   const [measurementMemo, setMeasurementMemo] = useState("");
+  const [weightUnit, setWeightUnit] = useState<WeightUnit>("kg");
+  const [weightIncrement, setWeightIncrement] = useState(2.5);
   const [billingProfile, setBillingProfile] = useState<BillingProfile | null>(null);
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -135,7 +150,9 @@ export default function SettingsPage() {
       const [fitnessProfileResult, measurementResult, billingResult] = await Promise.all([
         supabase
           .from("user_fitness_profiles")
-          .select("height_cm, training_experience, primary_goal, secondary_goal")
+          .select(
+            "height_cm, training_experience, primary_goal, secondary_goal, weight_unit, weight_increment"
+          )
           .eq("user_id", user.id)
           .maybeSingle(),
         supabase
@@ -172,6 +189,8 @@ export default function SettingsPage() {
         );
         setPrimaryGoal((fitnessProfileResult.data.primary_goal ?? "") as Goal);
         setSecondaryGoal((fitnessProfileResult.data.secondary_goal ?? "") as Goal);
+        setWeightUnit(normalizeWeightUnit(fitnessProfileResult.data.weight_unit));
+        setWeightIncrement(normalizeWeightIncrement(fitnessProfileResult.data.weight_increment));
       }
 
       if (measurementResult.error) {
@@ -235,7 +254,9 @@ export default function SettingsPage() {
           height_cm: nullableNumber(heightCm),
           training_experience: nullableText(trainingExperience),
           primary_goal: nullableText(primaryGoal),
-          secondary_goal: nullableText(secondaryGoal)
+          secondary_goal: nullableText(secondaryGoal),
+          weight_unit: weightUnit,
+          weight_increment: weightIncrement
         },
         { onConflict: "user_id" }
       );
@@ -243,7 +264,7 @@ export default function SettingsPage() {
     if (saveError) {
       setError(saveError.message);
     } else {
-      setMessage("ユーザー特性を保存しました。");
+      setMessage("ユーザー特性と入力設定を保存しました。");
     }
 
     setSavingProfile(false);
@@ -436,6 +457,51 @@ export default function SettingsPage() {
           onClick={() => void saveFitnessProfile()}
         >
           {savingProfile ? "保存中" : "ユーザー特性を保存"}
+        </button>
+      </section>
+
+      <section className="panel">
+        <div className="stack">
+          <h2>トレーニング入力設定</h2>
+          <p className="muted">記録画面の重量表示と増減ボタンに使います。</p>
+        </div>
+        <label className="field">
+          <span>重量単位</span>
+          <select
+            className="input"
+            value={weightUnit}
+            onChange={(event) => setWeightUnit(normalizeWeightUnit(event.target.value))}
+          >
+            {weightUnitOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>重量刻み</span>
+          <select
+            className="input"
+            value={String(weightIncrement)}
+            onChange={(event) =>
+              setWeightIncrement(normalizeWeightIncrement(event.target.value))
+            }
+          >
+            {weightIncrementOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          className="button full"
+          disabled={savingProfile}
+          type="button"
+          onClick={() => void saveFitnessProfile()}
+        >
+          {savingProfile ? "保存中" : "入力設定を保存"}
         </button>
       </section>
 

@@ -8,6 +8,8 @@
 - メールアドレス＋パスワードの新規アカウント作成
 - トレーニングセッション作成
 - 種目、重量、回数、セット保存
+- セット種別、補助あり、セットメモ保存
+- 重量単位と重量刻みの入力設定
 - 前回同種目ログ表示
 - 保存済みセッションへのAI診断生成
 - AI診断v2の構造化表示
@@ -77,6 +79,8 @@ Supabase SQL Editorで以下を実行してください。
 - `supabase/migrations/20260608003000_user_fitness_profile.sql`
 - `supabase/migrations/20260608004000_billing_and_ai_usage.sql`
 - `supabase/migrations/20260608005000_account_deletion_requests.sql`
+- `supabase/migrations/20260608006000_workout_set_metadata.sql`
+- `supabase/migrations/20260608007000_weight_input_preferences.sql`
 
 `user_fitness_profiles` と `body_measurements` もSupabase SQL Editorでmigrationを実行して作成してください。ユーザー特性、目的、体組成はすべて任意入力です。未入力でもトレーニング記録とAI診断は利用できます。
 
@@ -86,9 +90,21 @@ Supabase SQL Editorで以下を実行してください。
 
 アカウント削除依頼用migrationでは `account_deletion_requests` を作成します。本人は自分の削除依頼をread/insertできます。MVPでは即時自動削除ではなく、依頼を保存して内容確認後に対応する運用です。
 
+セットメタデータ用migrationでは `workout_sets` に `set_type`、`is_assisted`、`set_memo` を追加します。既存データは `set_type = normal`、`is_assisted = false` として扱います。
+
+重量入力設定用migrationでは `user_fitness_profiles` に `weight_unit` と `weight_increment` を追加します。初期値は `kg`、`2.5` です。`/settings` で変更した単位と刻みは、`/workouts/new` の重量表示と増減ボタンに反映されます。
+
+`workout_sets.weight` は常にkg正本で保存します。`weight_unit` は保存単位ではなく、表示・入力のpreferenceです。`lb` 表示のユーザーが `225lb` と入力した場合、保存前にkgへ換算して `workout_sets.weight` に保存します。表示時は保存済みのkg値をユーザー設定単位へ変換します。既存の `workout_sets.weight` はすべてkgとして扱い、単位設定を変更してもDBの過去値は書き換えません。
+
 ## AI診断v2
 
-AI診断v2では、セッション全体、種目別の総ボリューム、最大重量、推定1RM、前回比較、直近3回傾向、ユーザー目的を考慮して診断します。API側で計算できる分析値を先に作成し、AIにはその計算済みデータを渡します。
+AI診断v2では、セッション全体、種目別の総ボリューム、最大重量、推定1RM、前回比較、直近3回傾向、ユーザー目的を考慮して診断します。API側で計算できる分析値、目的別の次回候補、ガードレールを先に作成し、AIにはその計算済みデータを渡して文章化させます。
+
+各セットには `normal`、`warmup`、`main`、`backoff`、`drop` のセット種別、補助ありフラグ、任意メモを保存できます。セット種別はAI診断の精度向上に使います。アップセット、ドロップセット、補助ありセットは、推定1RMや実力値の主要評価から除外または弱く扱います。
+
+推定1RMはEpley式を基本にし、メインセットまたは通常セットのうち、補助なしでアップ/ドロップではないRM評価対象セットを中心に計算します。最大重量だけで下降判定せず、推定1RM、working volume、同重量での回数、複数セットの再現性を合わせて判定します。
+
+次回提案は目的別に分けます。筋力アップではトップセット、推定1RM、高重量の再現性を重視し、筋肥大では総ボリューム、8〜15回帯、バックオフセットを重視します。ダイエット、健康維持、維持では筋力維持と疲労管理を優先します。
 
 診断本文は既存の `summary`、`comparison`、`good_points`、`cautions`、`next_workout` にも保存し、詳細なv2構造、計算済み分析、ユーザー特性は `ai_reports.raw_json` に保存します。
 

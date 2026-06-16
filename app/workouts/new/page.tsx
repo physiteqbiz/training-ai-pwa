@@ -4,11 +4,35 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
 
 import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
+import {
+  displayWeightToKg,
+  formatWeight,
+  formatWeightNumber,
+  kgToDisplayWeight,
+  normalizeWeightUnit,
+  roundWeightByIncrement,
+  type WeightUnit
+} from "@/lib/weight-unit";
+
+type SetType = "normal" | "warmup" | "main" | "backoff" | "drop";
 
 type SetInput = {
   weight: string;
   reps: string;
+  setType: SetType;
+  isAssisted: boolean;
+  setMemo: string;
 };
+
+const setTypeOptions: Array<{ value: SetType; label: string }> = [
+  { value: "normal", label: "通常" },
+  { value: "warmup", label: "アップ" },
+  { value: "main", label: "メイン" },
+  { value: "backoff", label: "バックオフ" },
+  { value: "drop", label: "ドロップ" }
+];
+
+const weightIncrementOptions = [1, 1.25, 2.5, 5];
 
 type ExerciseCategory = {
   id: string;
@@ -37,6 +61,9 @@ type PreviousSet = {
   reps: number;
   set_order: number;
   exercise_order?: number;
+  set_type?: SetType | string | null;
+  is_assisted?: boolean | null;
+  set_memo?: string | null;
   created_at: string;
   session_date: string;
   session_created_at: string;
@@ -49,6 +76,9 @@ type ExistingWorkoutSet = {
   reps: number;
   set_order: number;
   exercise_order?: number;
+  set_type?: SetType | string | null;
+  is_assisted?: boolean | null;
+  set_memo?: string | null;
 };
 
 type PreviousSession = {
@@ -65,6 +95,9 @@ type PreviousWorkoutSetRow = {
   reps: number;
   set_order: number;
   exercise_order?: number;
+  set_type?: SetType | string | null;
+  is_assisted?: boolean | null;
+  set_memo?: string | null;
   created_at: string;
 };
 
@@ -91,6 +124,35 @@ function todayString() {
 
 function createLocalId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function isSetType(value: unknown): value is SetType {
+  return (
+    value === "normal" ||
+    value === "warmup" ||
+    value === "main" ||
+    value === "backoff" ||
+    value === "drop"
+  );
+}
+
+function normalizeSetType(value: unknown): SetType {
+  return isSetType(value) ? value : "normal";
+}
+
+function normalizeWeightIncrement(value: unknown) {
+  const parsed = Number(value);
+  return weightIncrementOptions.includes(parsed) ? parsed : 2.5;
+}
+
+function createSetInput(partial?: Partial<SetInput>): SetInput {
+  return {
+    weight: partial?.weight ?? "100",
+    reps: partial?.reps ?? "8",
+    setType: partial?.setType ?? "normal",
+    isAssisted: partial?.isAssisted ?? false,
+    setMemo: partial?.setMemo ?? ""
+  };
 }
 
 function groupPreviousSets(previousSets: PreviousSet[]) {
@@ -143,9 +205,15 @@ function NewWorkoutPageContent() {
   const [showAddExercise, setShowAddExercise] = useState(false);
   const [newExerciseName, setNewExerciseName] = useState("");
   const [newExerciseCategoryId, setNewExerciseCategoryId] = useState("");
+  const [weightUnit, setWeightUnit] = useState<WeightUnit>("kg");
+  const [weightIncrement, setWeightIncrement] = useState(2.5);
   const [loading, setLoading] = useState(false);
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [error, setError] = useState("");
+  const weightStepDeltas = useMemo(
+    () => [-2 * weightIncrement, -weightIncrement, weightIncrement, 2 * weightIncrement],
+    [weightIncrement]
+  );
 
   async function fetchPreviousSets(
     exerciseName: string,
@@ -166,7 +234,7 @@ function NewWorkoutPageContent() {
     let query = supabase
       .from("workout_sessions")
       .select(
-        "id, session_date, created_at, workout_sets(id, session_id, exercise_name, weight, reps, set_order, exercise_order, created_at)"
+        "id, session_date, created_at, workout_sets(id, session_id, exercise_name, weight, reps, set_order, exercise_order, set_type, is_assisted, set_memo, created_at)"
       )
       .lt("session_date", referenceDate)
       .order("session_date", { ascending: false })
@@ -213,6 +281,9 @@ function NewWorkoutPageContent() {
           reps: set.reps,
           set_order: set.set_order,
           exercise_order: set.exercise_order,
+          set_type: set.set_type,
+          is_assisted: set.is_assisted,
+          set_memo: set.set_memo,
           created_at: set.created_at,
           session_date: session.session_date,
           session_created_at: session.created_at
@@ -246,7 +317,8 @@ function NewWorkoutPageContent() {
     exerciseList: Exercise[],
     excludeSessionId: string,
     referenceDate: string,
-    requestUserId?: string
+    requestUserId?: string,
+    displayUnit: WeightUnit = weightUnit
   ) {
     const grouped = new Map<string, ExistingWorkoutSet[]>();
 
@@ -275,10 +347,15 @@ function NewWorkoutPageContent() {
           exerciseId: matchedExercise?.id ?? name,
           categoryId: matchedExercise?.category_id ?? selectedCategoryId,
           name,
-          sets: groupedSets.map((set) => ({
-            weight: String(Number(set.weight)),
-            reps: String(set.reps)
-          })),
+          sets: groupedSets.map((set) =>
+            createSetInput({
+              weight: formatWeightNumber(kgToDisplayWeight(set.weight, displayUnit)),
+              reps: String(set.reps),
+              setType: normalizeSetType(set.set_type),
+              isAssisted: Boolean(set.is_assisted),
+              setMemo: set.set_memo ?? ""
+            })
+          ),
           previousSets,
           loadingPrevious: false
         } satisfies WorkoutExerciseBlock;
@@ -289,14 +366,15 @@ function NewWorkoutPageContent() {
   async function loadSessionById(
     sessionId: string,
     exerciseList = exercises,
-    requestUserId = userId
+    requestUserId = userId,
+    displayUnit: WeightUnit = weightUnit
   ) {
     setError("");
 
     const { data, error: sessionError } = await supabase
       .from("workout_sessions")
       .select(
-        "id, session_date, title, ai_report_status, workout_sets(id, exercise_name, weight, reps, set_order, exercise_order)"
+        "id, session_date, title, ai_report_status, workout_sets(id, exercise_name, weight, reps, set_order, exercise_order, set_type, is_assisted, set_memo)"
       )
       .eq("id", sessionId)
       .single();
@@ -325,7 +403,8 @@ function NewWorkoutPageContent() {
         exerciseList,
         session.id,
         session.session_date,
-        requestUserId
+        requestUserId,
+        displayUnit
       )
     );
   }
@@ -333,14 +412,15 @@ function NewWorkoutPageContent() {
   async function loadSessionByDate(
     date: string,
     exerciseList = exercises,
-    requestUserId = userId
+    requestUserId = userId,
+    displayUnit: WeightUnit = weightUnit
   ) {
     setError("");
 
     const { data, error: sessionError } = await supabase
       .from("workout_sessions")
       .select(
-        "id, session_date, title, ai_report_status, workout_sets(id, exercise_name, weight, reps, set_order, exercise_order)"
+        "id, session_date, title, ai_report_status, workout_sets(id, exercise_name, weight, reps, set_order, exercise_order, set_type, is_assisted, set_memo)"
       )
       .eq("session_date", date)
       .order("created_at", { ascending: false })
@@ -377,7 +457,8 @@ function NewWorkoutPageContent() {
         exerciseList,
         session.id,
         session.session_date,
-        requestUserId
+        requestUserId,
+        displayUnit
       )
     );
   }
@@ -395,7 +476,7 @@ function NewWorkoutPageContent() {
         return;
       }
 
-      const [categoriesResult, exercisesResult] = await Promise.all([
+      const [categoriesResult, exercisesResult, inputSettingsResult] = await Promise.all([
         supabase
           .from("exercise_categories")
           .select("id, user_id, name, sort_order, is_default")
@@ -407,7 +488,12 @@ function NewWorkoutPageContent() {
           .select("id, user_id, category_id, name, sort_order, is_default")
           .or(`is_default.eq.true,user_id.eq.${user.id}`)
           .order("sort_order", { ascending: true })
-          .order("created_at", { ascending: true })
+          .order("created_at", { ascending: true }),
+        supabase
+          .from("user_fitness_profiles")
+          .select("weight_unit, weight_increment")
+          .eq("user_id", user.id)
+          .maybeSingle()
       ]);
 
       if (!active) {
@@ -432,6 +518,20 @@ function NewWorkoutPageContent() {
         setExercises((exercisesResult.data ?? []) as Exercise[]);
       }
 
+      const nextWeightUnit = inputSettingsResult.data
+        ? normalizeWeightUnit(inputSettingsResult.data.weight_unit)
+        : "kg";
+      const nextWeightIncrement = inputSettingsResult.data
+        ? normalizeWeightIncrement(inputSettingsResult.data.weight_increment)
+        : 2.5;
+
+      if (inputSettingsResult.error) {
+        console.error("workout input settings load error", inputSettingsResult.error.message);
+      } else if (inputSettingsResult.data) {
+        setWeightUnit(nextWeightUnit);
+        setWeightIncrement(nextWeightIncrement);
+      }
+
       const loadedExercises = (exercisesResult.data ?? []) as Exercise[];
       const querySessionId = searchParams.get("sessionId");
       const queryDate = searchParams.get("date") ?? todayString();
@@ -440,10 +540,10 @@ function NewWorkoutPageContent() {
       setFocusExercise(queryFocusExercise);
 
       if (querySessionId) {
-        await loadSessionById(querySessionId, loadedExercises, user.id);
+        await loadSessionById(querySessionId, loadedExercises, user.id, nextWeightUnit);
       } else {
         setSessionDate(queryDate);
-        await loadSessionByDate(queryDate, loadedExercises, user.id);
+        await loadSessionByDate(queryDate, loadedExercises, user.id, nextWeightUnit);
       }
 
       setCatalogLoading(false);
@@ -499,7 +599,7 @@ function NewWorkoutPageContent() {
       exerciseId: exercise.id,
       categoryId: exercise.category_id,
       name: exercise.name,
-      sets: [{ weight: "100", reps: "8" }],
+      sets: [createSetInput()],
       previousSets: [],
       loadingPrevious: true
     };
@@ -541,7 +641,11 @@ function NewWorkoutPageContent() {
   function adjustWeight(blockId: string, setIndex: number, delta: number) {
     const block = workoutExercises.find((item) => item.localId === blockId);
     const value = Number(block?.sets[setIndex]?.weight || 0);
-    updateSet(blockId, setIndex, { weight: String(Math.max(0, value + delta)) });
+    updateSet(blockId, setIndex, {
+      weight: formatWeightNumber(
+        roundWeightByIncrement(Math.max(0, value + delta), weightIncrement)
+      )
+    });
   }
 
   function adjustReps(blockId: string, setIndex: number, delta: number) {
@@ -557,8 +661,8 @@ function NewWorkoutPageContent() {
           return block;
         }
 
-        const last = block.sets[block.sets.length - 1] ?? { weight: "", reps: "" };
-        return { ...block, sets: [...block.sets, { ...last }] };
+        const last = block.sets[block.sets.length - 1] ?? createSetInput({ weight: "", reps: "" });
+        return { ...block, sets: [...block.sets, createSetInput(last)] };
       })
     );
   }
@@ -623,8 +727,11 @@ function NewWorkoutPageContent() {
         exercise_order: blockIndex + 1,
         validSets: block.sets
           .map((set) => ({
-            weight: Number(set.weight),
-            reps: Number(set.reps)
+            weight: displayWeightToKg(set.weight, weightUnit),
+            reps: Number(set.reps),
+            setType: set.setType,
+            isAssisted: set.isAssisted,
+            setMemo: set.setMemo.trim()
           }))
           .filter((set) => block.name && set.weight >= 0 && set.reps > 0)
       }))
@@ -700,7 +807,10 @@ function NewWorkoutPageContent() {
         weight: set.weight,
         reps: set.reps,
         exercise_order: block.exercise_order,
-        set_order: globalSetOrder++
+        set_order: globalSetOrder++,
+        set_type: set.setType,
+        is_assisted: set.isAssisted,
+        set_memo: set.setMemo || null
       }))
     );
 
@@ -769,10 +879,12 @@ function NewWorkoutPageContent() {
                   <div className="row">
                     <div>
                       <p className="eyebrow">種目 {blockIndex + 1}</p>
-                      <h2>{block.name}</h2>
-                      {focusExercise && focusExercise === block.name ? (
-                        <p className="muted">編集中の種目です。</p>
-                      ) : null}
+                      <div className="exercise-title-row">
+                        <h2>{block.name}</h2>
+                        {focusExercise && focusExercise === block.name ? (
+                          <span className="focus-badge">編集中</span>
+                        ) : null}
+                      </div>
                     </div>
                     <button
                       className="button ghost danger"
@@ -797,21 +909,137 @@ function NewWorkoutPageContent() {
                         </div>
                         <p>
                           {session.sets
-                            .map((set) => `${Number(set.weight)}kg × ${set.reps}`)
+                            .map((set) => `${formatWeight(set.weight, weightUnit)} × ${set.reps}`)
                             .join(" / ")}
                         </p>
                       </div>
                     ))}
                   </div>
 
-                  <div className="stack">
+                  <div className="set-list-compact">
                     {block.sets.map((set, setIndex) => (
-                      <div className="set-card compact" key={`${block.localId}-${setIndex}`}>
-                        <div className="row">
-                          <h3>セット {setIndex + 1}</h3>
+                      <article className="set-row-card" key={`${block.localId}-${setIndex}`}>
+                        <div className="set-row-main">
+                          <div className="set-index">S{setIndex + 1}</div>
+                          <label className="compact-number-field">
+                            <span>重量</span>
+                            <div className="compact-number-input">
+                              <input
+                                inputMode="decimal"
+                                min="0"
+                                step={weightIncrement}
+                                type="number"
+                                value={set.weight}
+                                onChange={(event) =>
+                                  updateSet(block.localId, setIndex, {
+                                    weight: event.target.value
+                                  })
+                                }
+                              />
+                              <b>{weightUnit}</b>
+                            </div>
+                          </label>
+                          <span className="set-times">×</span>
+                          <label className="compact-number-field reps-field">
+                            <span>回数</span>
+                            <div className="compact-number-input">
+                              <input
+                                inputMode="numeric"
+                                min="1"
+                                step="1"
+                                type="number"
+                                value={set.reps}
+                                onChange={(event) =>
+                                  updateSet(block.localId, setIndex, {
+                                    reps: event.target.value
+                                  })
+                                }
+                              />
+                              <b>回</b>
+                            </div>
+                          </label>
+                          <select
+                            aria-label={`セット${setIndex + 1}の種別`}
+                            className="set-type-select"
+                            value={set.setType}
+                            onChange={(event) =>
+                              updateSet(block.localId, setIndex, {
+                                setType: normalizeSetType(event.target.value)
+                              })
+                            }
+                          >
+                            {setTypeOptions.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="set-stepper-strip">
+                          {weightStepDeltas.map((delta) => (
+                            <button
+                              className="step-button"
+                              key={delta}
+                              type="button"
+                              onClick={() => adjustWeight(block.localId, setIndex, delta)}
+                            >
+                              {delta > 0 ? "+" : ""}
+                              {formatWeightNumber(delta)}
+                            </button>
+                          ))}
+                          <button
+                            className="step-button reps-step"
+                            type="button"
+                            onClick={() => adjustReps(block.localId, setIndex, -1)}
+                          >
+                            -1回
+                          </button>
+                          <button
+                            className="step-button reps-step"
+                            type="button"
+                            onClick={() => adjustReps(block.localId, setIndex, 1)}
+                          >
+                            +1回
+                          </button>
+                        </div>
+
+                        <div className="set-row-footer">
+                          <details className="set-details compact-details">
+                            <summary className="details-toggle">
+                              <span className="toggle-label toggle-closed">詳細 ▼</span>
+                              <span className="toggle-label toggle-open">閉じる ▲</span>
+                              {set.isAssisted ? <span className="detail-badge">補助あり</span> : null}
+                              {set.setMemo.trim() ? <span className="detail-badge">メモあり</span> : null}
+                            </summary>
+                            <label className="check-row compact-check">
+                              <input
+                                type="checkbox"
+                                checked={set.isAssisted}
+                                onChange={(event) =>
+                                  updateSet(block.localId, setIndex, {
+                                    isAssisted: event.target.checked
+                                  })
+                                }
+                              />
+                              <span>補助あり</span>
+                            </label>
+                            <label className="field compact-memo">
+                              <span>メモ（任意）</span>
+                              <textarea
+                                className="input textarea"
+                                value={set.setMemo}
+                                onChange={(event) =>
+                                  updateSet(block.localId, setIndex, {
+                                    setMemo: event.target.value
+                                  })
+                                }
+                              />
+                            </label>
+                          </details>
                           {block.sets.length > 1 ? (
                             <button
-                              className="button ghost danger"
+                              className="text-danger-button"
                               type="button"
                               onClick={() => removeSet(block.localId, setIndex)}
                             >
@@ -819,71 +1047,7 @@ function NewWorkoutPageContent() {
                             </button>
                           ) : null}
                         </div>
-                        <div className="set-grid">
-                          <label className="field">
-                            <span>重量kg</span>
-                            <input
-                              className="input"
-                              inputMode="decimal"
-                              type="number"
-                              min="0"
-                              step="0.5"
-                              value={set.weight}
-                              onChange={(event) =>
-                                updateSet(block.localId, setIndex, {
-                                  weight: event.target.value
-                                })
-                              }
-                            />
-                          </label>
-                          <label className="field">
-                            <span>回数</span>
-                            <input
-                              className="input"
-                              inputMode="numeric"
-                              type="number"
-                              min="1"
-                              step="1"
-                              value={set.reps}
-                              onChange={(event) =>
-                                updateSet(block.localId, setIndex, {
-                                  reps: event.target.value
-                                })
-                              }
-                            />
-                          </label>
-                        </div>
-                        <div className="quick-grid">
-                          <button
-                            className="button secondary"
-                            type="button"
-                            onClick={() => adjustWeight(block.localId, setIndex, -2.5)}
-                          >
-                            -2.5
-                          </button>
-                          <button
-                            className="button secondary"
-                            type="button"
-                            onClick={() => adjustWeight(block.localId, setIndex, 2.5)}
-                          >
-                            +2.5
-                          </button>
-                          <button
-                            className="button secondary"
-                            type="button"
-                            onClick={() => adjustReps(block.localId, setIndex, -1)}
-                          >
-                            -1
-                          </button>
-                          <button
-                            className="button secondary"
-                            type="button"
-                            onClick={() => adjustReps(block.localId, setIndex, 1)}
-                          >
-                            +1
-                          </button>
-                        </div>
-                      </div>
+                      </article>
                     ))}
                   </div>
 

@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { type BillingProfile, normalizeAiQuota } from "@/lib/billing";
 import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
+import { formatWeight, normalizeWeightUnit, type WeightUnit } from "@/lib/weight-unit";
 
 type WorkoutSet = {
   exercise_name: string;
@@ -99,6 +100,7 @@ export default function HomePage() {
   const [email, setEmail] = useState("");
   const [sessions, setSessions] = useState<WorkoutSession[]>([]);
   const [billingProfile, setBillingProfile] = useState<BillingProfile | null>(null);
+  const [weightUnit, setWeightUnit] = useState<WeightUnit>("kg");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showInstallGuide, setShowInstallGuide] = useState(false);
@@ -128,7 +130,7 @@ export default function HomePage() {
 
       setEmail(user.email ?? "");
 
-      const [sessionsResult, billingResult] = await Promise.all([
+      const [sessionsResult, billingResult, inputSettingsResult] = await Promise.all([
         supabase
           .from("workout_sessions")
           .select(
@@ -141,6 +143,11 @@ export default function HomePage() {
           .from("profiles")
           .select("plan, subscription_status, ai_quota_monthly, ai_quota_used, ai_quota_period")
           .eq("id", user.id)
+          .maybeSingle(),
+        supabase
+          .from("user_fitness_profiles")
+          .select("weight_unit")
+          .eq("user_id", user.id)
           .maybeSingle()
       ]);
 
@@ -156,6 +163,10 @@ export default function HomePage() {
 
       if (!billingResult.error) {
         setBillingProfile((billingResult.data as BillingProfile | null) ?? null);
+      }
+
+      if (!inputSettingsResult.error && inputSettingsResult.data) {
+        setWeightUnit(normalizeWeightUnit(inputSettingsResult.data.weight_unit));
       }
 
       setLoading(false);
@@ -296,7 +307,7 @@ export default function HomePage() {
                     <div className="stack">
                       {group.sets.map((set, index) => (
                         <p key={`${group.exerciseName}-${index}`}>
-                          {Number(set.weight)}kg × {set.reps}
+                          {formatWeight(set.weight, weightUnit)} × {set.reps}
                         </p>
                       ))}
                     </div>
