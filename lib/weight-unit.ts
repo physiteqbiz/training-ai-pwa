@@ -38,7 +38,13 @@ export function formatWeightNumber(value: number | string) {
     return "0";
   }
 
-  return String(roundToDecimals(numeric, 2)).replace(/\.?0+$/, "");
+  const rounded = roundToDecimals(numeric, 2);
+
+  if (Number.isInteger(rounded)) {
+    return String(rounded);
+  }
+
+  return String(rounded).replace(/(\.\d*?[1-9])0+$/, "$1").replace(/\.0+$/, "");
 }
 
 export function formatWeight(weightKg: number | string, unit: WeightUnit) {

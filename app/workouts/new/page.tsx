@@ -17,7 +17,7 @@ import {
 type SetType = "normal" | "warmup" | "main" | "backoff" | "drop";
 
 type SetInput = {
-  weight: string;
+  displayWeight: string;
   reps: string;
   setType: SetType;
   isAssisted: boolean;
@@ -147,7 +147,7 @@ function normalizeWeightIncrement(value: unknown) {
 
 function createSetInput(partial?: Partial<SetInput>): SetInput {
   return {
-    weight: partial?.weight ?? "100",
+    displayWeight: partial?.displayWeight ?? "100",
     reps: partial?.reps ?? "8",
     setType: partial?.setType ?? "normal",
     isAssisted: partial?.isAssisted ?? false,
@@ -349,7 +349,7 @@ function NewWorkoutPageContent() {
           name,
           sets: groupedSets.map((set) =>
             createSetInput({
-              weight: formatWeightNumber(kgToDisplayWeight(set.weight, displayUnit)),
+              displayWeight: formatWeightNumber(kgToDisplayWeight(set.weight, displayUnit)),
               reps: String(set.reps),
               setType: normalizeSetType(set.set_type),
               isAssisted: Boolean(set.is_assisted),
@@ -640,9 +640,9 @@ function NewWorkoutPageContent() {
 
   function adjustWeight(blockId: string, setIndex: number, delta: number) {
     const block = workoutExercises.find((item) => item.localId === blockId);
-    const value = Number(block?.sets[setIndex]?.weight || 0);
+    const value = Number(block?.sets[setIndex]?.displayWeight || 0);
     updateSet(blockId, setIndex, {
-      weight: formatWeightNumber(
+      displayWeight: formatWeightNumber(
         roundWeightByIncrement(Math.max(0, value + delta), weightIncrement)
       )
     });
@@ -661,7 +661,8 @@ function NewWorkoutPageContent() {
           return block;
         }
 
-        const last = block.sets[block.sets.length - 1] ?? createSetInput({ weight: "", reps: "" });
+        const last =
+          block.sets[block.sets.length - 1] ?? createSetInput({ displayWeight: "", reps: "" });
         return { ...block, sets: [...block.sets, createSetInput(last)] };
       })
     );
@@ -727,13 +728,13 @@ function NewWorkoutPageContent() {
         exercise_order: blockIndex + 1,
         validSets: block.sets
           .map((set) => ({
-            weight: displayWeightToKg(set.weight, weightUnit),
+            weightKg: displayWeightToKg(set.displayWeight, weightUnit),
             reps: Number(set.reps),
             setType: set.setType,
             isAssisted: set.isAssisted,
             setMemo: set.setMemo.trim()
           }))
-          .filter((set) => block.name && set.weight >= 0 && set.reps > 0)
+          .filter((set) => block.name && set.weightKg >= 0 && set.reps > 0)
       }))
       .filter((block) => block.validSets.length > 0);
 
@@ -804,7 +805,7 @@ function NewWorkoutPageContent() {
         session_id: session.id,
         user_id: userId,
         exercise_name: block.name,
-        weight: set.weight,
+        weight: set.weightKg,
         reps: set.reps,
         exercise_order: block.exercise_order,
         set_order: globalSetOrder++,
@@ -929,10 +930,10 @@ function NewWorkoutPageContent() {
                                 min="0"
                                 step={weightIncrement}
                                 type="number"
-                                value={set.weight}
+                                value={set.displayWeight}
                                 onChange={(event) =>
                                   updateSet(block.localId, setIndex, {
-                                    weight: event.target.value
+                                    displayWeight: event.target.value
                                   })
                                 }
                               />
