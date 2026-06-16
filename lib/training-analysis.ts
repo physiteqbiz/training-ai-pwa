@@ -1,4 +1,5 @@
 import {
+  calculateEstimated1RM,
   formatWeight,
   kgToDisplayWeight,
   normalizeWeightUnit,
@@ -210,7 +211,7 @@ function formatTarget(
 }
 
 export function estimateOneRepMax(weight: number, reps: number) {
-  return roundOne(weight * (1 + reps / 30));
+  return roundOne(calculateEstimated1RM(weight, reps) ?? 0);
 }
 
 export function normalizeTrainingSet(set: WorkoutSetForAnalysis): NormalizedTrainingSet {

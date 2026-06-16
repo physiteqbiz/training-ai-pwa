@@ -51,6 +51,38 @@ export function formatWeight(weightKg: number | string, unit: WeightUnit) {
   return `${formatWeightNumber(kgToDisplayWeight(weightKg, unit))}${unit}`;
 }
 
+export function formatDisplayWeight(displayWeight: number | string, unit: WeightUnit) {
+  return `${formatWeightNumber(displayWeight)}${unit}`;
+}
+
+export function calculateEstimated1RM(weight: number | string, reps: number | string) {
+  const numericWeight = Number(weight);
+  const numericReps = Number(reps);
+
+  if (!Number.isFinite(numericWeight) || !Number.isFinite(numericReps)) {
+    return null;
+  }
+
+  if (numericWeight <= 0 || numericReps <= 0) {
+    return null;
+  }
+
+  if (numericReps <= 1) {
+    return numericWeight;
+  }
+
+  return numericWeight * (1 + numericReps / 30);
+}
+
+export function formatEstimated1RM(
+  displayWeight: number | string,
+  reps: number | string,
+  unit: WeightUnit
+) {
+  const estimated = calculateEstimated1RM(displayWeight, reps);
+  return estimated === null ? null : formatDisplayWeight(estimated, unit);
+}
+
 function roundDisplayWeight(value: number) {
   return roundToDecimals(value, 1);
 }

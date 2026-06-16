@@ -6,6 +6,8 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
 import {
   displayWeightToKg,
+  formatDisplayWeight,
+  formatEstimated1RM,
   formatWeight,
   formatWeightNumber,
   kgToDisplayWeight,
@@ -118,6 +120,11 @@ type WorkoutExerciseBlock = {
   loadingPrevious: boolean;
 };
 
+type WorkoutSummary = {
+  volume: number;
+  setCount: number;
+};
+
 function todayString() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -153,6 +160,44 @@ function createSetInput(partial?: Partial<SetInput>): SetInput {
     isAssisted: partial?.isAssisted ?? false,
     setMemo: partial?.setMemo ?? ""
   };
+}
+
+function getValidSetMetrics(set: SetInput) {
+  const displayWeight = Number(set.displayWeight);
+  const reps = Number(set.reps);
+
+  if (
+    !Number.isFinite(displayWeight) ||
+    !Number.isFinite(reps) ||
+    displayWeight <= 0 ||
+    reps <= 0
+  ) {
+    return null;
+  }
+
+  return {
+    displayWeight,
+    reps,
+    volume: displayWeight * reps
+  };
+}
+
+function summarizeSets(sets: SetInput[]): WorkoutSummary {
+  return sets.reduce<WorkoutSummary>(
+    (summary, set) => {
+      const metrics = getValidSetMetrics(set);
+
+      if (!metrics) {
+        return summary;
+      }
+
+      return {
+        volume: summary.volume + metrics.volume,
+        setCount: summary.setCount + 1
+      };
+    },
+    { volume: 0, setCount: 0 }
+  );
 }
 
 function groupPreviousSets(previousSets: PreviousSet[]) {
@@ -208,11 +253,34 @@ function NewWorkoutPageContent() {
   const [weightUnit, setWeightUnit] = useState<WeightUnit>("kg");
   const [weightIncrement, setWeightIncrement] = useState(2.5);
   const [loading, setLoading] = useState(false);
+  const [savingExerciseId, setSavingExerciseId] = useState("");
   const [catalogLoading, setCatalogLoading] = useState(true);
+  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const weightStepDeltas = useMemo(
     () => [-2 * weightIncrement, -weightIncrement, weightIncrement, 2 * weightIncrement],
     [weightIncrement]
+  );
+  const exerciseSummaries = useMemo(
+    () =>
+      Object.fromEntries(
+        workoutExercises.map((block) => [block.localId, summarizeSets(block.sets)])
+      ) as Record<string, WorkoutSummary>,
+    [workoutExercises]
+  );
+  const sessionSummary = useMemo(
+    () =>
+      workoutExercises.reduce<WorkoutSummary>(
+        (summary, block) => {
+          const blockSummary = exerciseSummaries[block.localId] ?? { volume: 0, setCount: 0 };
+          return {
+            volume: summary.volume + blockSummary.volume,
+            setCount: summary.setCount + blockSummary.setCount
+          };
+        },
+        { volume: 0, setCount: 0 }
+      ),
+    [exerciseSummaries, workoutExercises]
   );
 
   async function fetchPreviousSets(
@@ -721,8 +789,8 @@ function NewWorkoutPageContent() {
     await addWorkoutExercise(newExercise);
   }
 
-  async function saveSession() {
-    const validBlocks = workoutExercises
+  function buildValidBlocks() {
+    return workoutExercises
       .map((block, blockIndex) => ({
         ...block,
         exercise_order: blockIndex + 1,
@@ -737,6 +805,114 @@ function NewWorkoutPageContent() {
           .filter((set) => block.name && set.weightKg >= 0 && set.reps > 0)
       }))
       .filter((block) => block.validSets.length > 0);
+  }
+
+  function getSessionTitle(validBlocks: ReturnType<typeof buildValidBlocks>) {
+    const names = validBlocks.map((block) => block.name);
+
+    if (names.length === 0) {
+      return "トレーニング";
+    }
+
+    return names.length === 1 ? names[0] : `${names[0]} 他${names.length - 1}種目`;
+  }
+
+  function getNextAiReportStatus(): AiReportStatus {
+    return editingSessionId
+      ? editingAiReportStatus === "generated"
+        ? "stale"
+        : editingAiReportStatus
+      : "not_generated";
+  }
+
+  async function saveExercise(blockId: string) {
+    const validBlocks = buildValidBlocks();
+    const targetBlock = validBlocks.find((block) => block.localId === blockId);
+
+    if (!userId || !targetBlock || targetBlock.validSets.length === 0) {
+      setError("保存する種目に有効なセットを入力してください。");
+      return;
+    }
+
+    setSavingExerciseId(blockId);
+    setMessage("");
+    setError("");
+
+    const nextAiReportStatus = getNextAiReportStatus();
+    const title = getSessionTitle(validBlocks);
+    const sessionResult = editingSessionId
+      ? await supabase
+          .from("workout_sessions")
+          .update({
+            session_date: sessionDate,
+            title,
+            ai_report_status: nextAiReportStatus
+          })
+          .eq("id", editingSessionId)
+          .select("id")
+          .single()
+      : await supabase
+          .from("workout_sessions")
+          .insert({
+            user_id: userId,
+            session_date: sessionDate,
+            title,
+            ai_report_status: "not_generated"
+          })
+          .select("id")
+          .single();
+
+    const { data: session, error: sessionError } = sessionResult;
+
+    if (sessionError || !session) {
+      setError(sessionError?.message ?? "種目保存に失敗しました。");
+      setSavingExerciseId("");
+      return;
+    }
+
+    await supabase.from("ai_reports").delete().eq("session_id", session.id);
+
+    const { error: deleteSetsError } = await supabase
+      .from("workout_sets")
+      .delete()
+      .eq("session_id", session.id)
+      .eq("exercise_name", targetBlock.name);
+
+    if (deleteSetsError) {
+      setError(deleteSetsError.message);
+      setSavingExerciseId("");
+      return;
+    }
+
+    const setRows = targetBlock.validSets.map((set, setIndex) => ({
+      session_id: session.id,
+      user_id: userId,
+      exercise_name: targetBlock.name,
+      weight: set.weightKg,
+      reps: set.reps,
+      exercise_order: targetBlock.exercise_order,
+      set_order: setIndex + 1,
+      set_type: set.setType,
+      is_assisted: set.isAssisted,
+      set_memo: set.setMemo || null
+    }));
+
+    const { error: setsError } = await supabase.from("workout_sets").insert(setRows);
+
+    if (setsError) {
+      setError(setsError.message);
+      setSavingExerciseId("");
+      return;
+    }
+
+    setEditingSessionId(session.id);
+    setEditingAiReportStatus(nextAiReportStatus);
+    setMessage(`${targetBlock.name}を保存しました。`);
+    setSavingExerciseId("");
+  }
+
+  async function saveSession() {
+    const validBlocks = buildValidBlocks();
 
     if (!userId || validBlocks.length === 0) {
       setError("少なくとも1種目と1セットを入力してください。");
@@ -744,15 +920,11 @@ function NewWorkoutPageContent() {
     }
 
     setLoading(true);
+    setMessage("");
     setError("");
 
-    const names = validBlocks.map((block) => block.name);
-    const title = names.length === 1 ? names[0] : `${names[0]} 他${names.length - 1}種目`;
-    const nextAiReportStatus: AiReportStatus = editingSessionId
-      ? editingAiReportStatus === "generated"
-        ? "stale"
-        : editingAiReportStatus
-      : "not_generated";
+    const title = getSessionTitle(validBlocks);
+    const nextAiReportStatus = getNextAiReportStatus();
 
     const sessionResult = editingSessionId
       ? await supabase
@@ -851,6 +1023,20 @@ function NewWorkoutPageContent() {
         </label>
       </section>
 
+      <section className="panel compact-panel summary-panel">
+        <p className="eyebrow">今日の合計</p>
+        <div className="summary-metrics">
+          <div>
+            <span>総ボリューム</span>
+            <strong>{formatDisplayWeight(sessionSummary.volume, weightUnit)}</strong>
+          </div>
+          <div>
+            <span>総セット数</span>
+            <strong>{sessionSummary.setCount}セット</strong>
+          </div>
+        </div>
+      </section>
+
       <section className="panel">
         <div className="row">
           <div>
@@ -866,6 +1052,10 @@ function NewWorkoutPageContent() {
           <div className="stack">
             {workoutExercises.map((block, blockIndex) => {
               const previousSessions = groupPreviousSets(block.previousSets);
+              const blockSummary = exerciseSummaries[block.localId] ?? {
+                volume: 0,
+                setCount: 0
+              };
 
               return (
                 <article
@@ -886,6 +1076,10 @@ function NewWorkoutPageContent() {
                           <span className="focus-badge">編集中</span>
                         ) : null}
                       </div>
+                      <p className="exercise-summary-line">
+                        {formatDisplayWeight(blockSummary.volume, weightUnit)} /{" "}
+                        {blockSummary.setCount}セット
+                      </p>
                     </div>
                     <button
                       className="button ghost danger"
@@ -918,138 +1112,155 @@ function NewWorkoutPageContent() {
                   </div>
 
                   <div className="set-list-compact">
-                    {block.sets.map((set, setIndex) => (
-                      <article className="set-row-card" key={`${block.localId}-${setIndex}`}>
-                        <div className="set-row-main">
-                          <div className="set-index">S{setIndex + 1}</div>
-                          <label className="compact-number-field">
-                            <span>重量</span>
-                            <div className="compact-number-input">
-                              <input
-                                inputMode="decimal"
-                                min="0"
-                                step={weightIncrement}
-                                type="number"
-                                value={set.displayWeight}
-                                onChange={(event) =>
-                                  updateSet(block.localId, setIndex, {
-                                    displayWeight: event.target.value
-                                  })
-                                }
-                              />
-                              <b>{weightUnit}</b>
-                            </div>
-                          </label>
-                          <span className="set-times">×</span>
-                          <label className="compact-number-field reps-field">
-                            <span>回数</span>
-                            <div className="compact-number-input">
-                              <input
-                                inputMode="numeric"
-                                min="1"
-                                step="1"
-                                type="number"
-                                value={set.reps}
-                                onChange={(event) =>
-                                  updateSet(block.localId, setIndex, {
-                                    reps: event.target.value
-                                  })
-                                }
-                              />
-                              <b>回</b>
-                            </div>
-                          </label>
-                          <select
-                            aria-label={`セット${setIndex + 1}の種別`}
-                            className="set-type-select"
-                            value={set.setType}
-                            onChange={(event) =>
-                              updateSet(block.localId, setIndex, {
-                                setType: normalizeSetType(event.target.value)
-                              })
-                            }
-                          >
-                            {setTypeOptions.map((option) => (
-                              <option key={option.value} value={option.value}>
-                                {option.label}
-                              </option>
+                    {block.sets.map((set, setIndex) => {
+                      const estimatedOneRepMax = formatEstimated1RM(
+                        set.displayWeight,
+                        set.reps,
+                        weightUnit
+                      );
+
+                      return (
+                        <article className="set-row-card" key={`${block.localId}-${setIndex}`}>
+                          <div className="set-row-main">
+                            <div className="set-index">S{setIndex + 1}</div>
+                            <label className="compact-number-field">
+                              <span>重量</span>
+                              <div className="compact-number-input">
+                                <input
+                                  inputMode="decimal"
+                                  min="0"
+                                  step={weightIncrement}
+                                  type="number"
+                                  value={set.displayWeight}
+                                  onChange={(event) =>
+                                    updateSet(block.localId, setIndex, {
+                                      displayWeight: event.target.value
+                                    })
+                                  }
+                                />
+                                <b>{weightUnit}</b>
+                              </div>
+                            </label>
+                            <span className="set-times">×</span>
+                            <label className="compact-number-field reps-field">
+                              <span>回数</span>
+                              <div className="compact-number-input">
+                                <input
+                                  inputMode="numeric"
+                                  min="1"
+                                  step="1"
+                                  type="number"
+                                  value={set.reps}
+                                  onChange={(event) =>
+                                    updateSet(block.localId, setIndex, {
+                                      reps: event.target.value
+                                    })
+                                  }
+                                />
+                                <b>回</b>
+                              </div>
+                            </label>
+                            <select
+                              aria-label={`セット${setIndex + 1}の種別`}
+                              className="set-type-select"
+                              value={set.setType}
+                              onChange={(event) =>
+                                updateSet(block.localId, setIndex, {
+                                  setType: normalizeSetType(event.target.value)
+                                })
+                              }
+                            >
+                              {setTypeOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div className="set-stepper-strip">
+                            {weightStepDeltas.map((delta) => (
+                              <button
+                                className="step-button"
+                                key={delta}
+                                type="button"
+                                onClick={() => adjustWeight(block.localId, setIndex, delta)}
+                              >
+                                {delta > 0 ? "+" : ""}
+                                {formatWeightNumber(delta)}
+                              </button>
                             ))}
-                          </select>
-                        </div>
-
-                        <div className="set-stepper-strip">
-                          {weightStepDeltas.map((delta) => (
                             <button
-                              className="step-button"
-                              key={delta}
+                              className="step-button reps-step"
                               type="button"
-                              onClick={() => adjustWeight(block.localId, setIndex, delta)}
+                              onClick={() => adjustReps(block.localId, setIndex, -1)}
                             >
-                              {delta > 0 ? "+" : ""}
-                              {formatWeightNumber(delta)}
+                              -1回
                             </button>
-                          ))}
-                          <button
-                            className="step-button reps-step"
-                            type="button"
-                            onClick={() => adjustReps(block.localId, setIndex, -1)}
-                          >
-                            -1回
-                          </button>
-                          <button
-                            className="step-button reps-step"
-                            type="button"
-                            onClick={() => adjustReps(block.localId, setIndex, 1)}
-                          >
-                            +1回
-                          </button>
-                        </div>
-
-                        <div className="set-row-footer">
-                          <details className="set-details compact-details">
-                            <summary className="details-toggle">
-                              <span className="toggle-label toggle-closed">詳細 ▼</span>
-                              <span className="toggle-label toggle-open">閉じる ▲</span>
-                              {set.isAssisted ? <span className="detail-badge">補助あり</span> : null}
-                              {set.setMemo.trim() ? <span className="detail-badge">メモあり</span> : null}
-                            </summary>
-                            <label className="check-row compact-check">
-                              <input
-                                type="checkbox"
-                                checked={set.isAssisted}
-                                onChange={(event) =>
-                                  updateSet(block.localId, setIndex, {
-                                    isAssisted: event.target.checked
-                                  })
-                                }
-                              />
-                              <span>補助あり</span>
-                            </label>
-                            <label className="field compact-memo">
-                              <span>メモ（任意）</span>
-                              <textarea
-                                className="input textarea"
-                                value={set.setMemo}
-                                onChange={(event) =>
-                                  updateSet(block.localId, setIndex, {
-                                    setMemo: event.target.value
-                                  })
-                                }
-                              />
-                            </label>
-                          </details>
-                          {block.sets.length > 1 ? (
                             <button
-                              className="text-danger-button"
+                              className="step-button reps-step"
                               type="button"
-                              onClick={() => removeSet(block.localId, setIndex)}
+                              onClick={() => adjustReps(block.localId, setIndex, 1)}
                             >
-                              削除
+                              +1回
                             </button>
-                          ) : null}
-                        </div>
-                      </article>
-                    ))}
+                          </div>
+
+                          <div className="set-row-footer">
+                            <div className="set-footer-left">
+                              {estimatedOneRepMax ? (
+                                <span className="e1rm-pill">e1RM {estimatedOneRepMax}</span>
+                              ) : null}
+                              <details className="set-details compact-details">
+                                <summary className="details-toggle">
+                                  <span className="toggle-label toggle-closed">詳細 ▼</span>
+                                  <span className="toggle-label toggle-open">閉じる ▲</span>
+                                  {set.isAssisted ? (
+                                    <span className="detail-badge">補助あり</span>
+                                  ) : null}
+                                  {set.setMemo.trim() ? (
+                                    <span className="detail-badge">メモあり</span>
+                                  ) : null}
+                                </summary>
+                                <label className="check-row compact-check">
+                                  <input
+                                    type="checkbox"
+                                    checked={set.isAssisted}
+                                    onChange={(event) =>
+                                      updateSet(block.localId, setIndex, {
+                                        isAssisted: event.target.checked
+                                      })
+                                    }
+                                  />
+                                  <span>補助あり</span>
+                                </label>
+                                <label className="field compact-memo">
+                                  <span>メモ（任意）</span>
+                                  <textarea
+                                    className="input textarea"
+                                    value={set.setMemo}
+                                    onChange={(event) =>
+                                      updateSet(block.localId, setIndex, {
+                                        setMemo: event.target.value
+                                      })
+                                    }
+                                  />
+                                </label>
+                              </details>
+                            </div>
+                            {block.sets.length > 1 ? (
+                              <button
+                                className="text-danger-button"
+                                type="button"
+                                onClick={() => removeSet(block.localId, setIndex)}
+                              >
+                                削除
+                              </button>
+                            ) : null}
+                          </div>
+                        </article>
+                      );
+                    })}
                   </div>
 
                   <button
@@ -1058,6 +1269,14 @@ function NewWorkoutPageContent() {
                     onClick={() => addSet(block.localId)}
                   >
                     ＋セット追加
+                  </button>
+                  <button
+                    className="button full"
+                    disabled={loading || Boolean(savingExerciseId)}
+                    type="button"
+                    onClick={() => void saveExercise(block.localId)}
+                  >
+                    {savingExerciseId === block.localId ? "種目保存中..." : "この種目を保存"}
                   </button>
                 </article>
               );
@@ -1179,10 +1398,16 @@ function NewWorkoutPageContent() {
         </section>
       ) : null}
 
-      <button className="button full" type="button" disabled={loading} onClick={saveSession}>
-        {editingSessionId ? "セッションを更新" : "セッションを保存"}
+      <button
+        className="button full"
+        type="button"
+        disabled={loading || Boolean(savingExerciseId)}
+        onClick={saveSession}
+      >
+        {loading ? "セッション保存中..." : editingSessionId ? "セッションを更新" : "セッションを保存"}
       </button>
 
+      {message ? <div className="status success">{message}</div> : null}
       {error ? <div className="status error">{error}</div> : null}
     </div>
   );

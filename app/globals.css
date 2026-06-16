@@ -350,6 +350,36 @@ summary {
   gap: 5px;
 }
 
+.summary-panel {
+  gap: 8px;
+}
+
+.summary-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.summary-metrics div {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0e1215;
+  padding: 10px;
+}
+
+.summary-metrics span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.summary-metrics strong {
+  color: var(--accent);
+  font-size: 1rem;
+}
+
 .step-button {
   min-height: 31px;
   border: 1px solid var(--line);
@@ -376,6 +406,27 @@ summary {
   align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
+}
+
+.set-footer-left {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.e1rm-pill {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  border: 1px solid #335344;
+  border-radius: 999px;
+  background: #10251c;
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 800;
+  padding: 0 10px;
 }
 
 .text-danger-button {
@@ -411,7 +462,7 @@ summary {
 }
 
 .compact-details {
-  flex: 1;
+  flex: 0 1 auto;
   gap: 8px;
   border: 0;
   background: transparent;
@@ -470,6 +521,13 @@ summary {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+}
+
+.exercise-summary-line {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 700;
 }
 
 .focus-badge {
