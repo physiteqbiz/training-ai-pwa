@@ -106,6 +106,22 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
+function normalizeScoreToHundred(value: unknown) {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  const score = Number(value);
+
+  if (!Number.isFinite(score)) {
+    return undefined;
+  }
+
+  const normalized = score <= 10 ? score * 10 : score;
+
+  return Math.round(Math.max(0, Math.min(100, normalized)));
+}
+
 function normalizeSuggestedSets(value: unknown): SuggestedSet[] {
   if (!Array.isArray(value)) {
     return [];
@@ -212,10 +228,7 @@ function normalizeV2Report(value: unknown): AiReportV2 | null {
   }
 
   return {
-    overall_score:
-      source.overall_score === undefined || source.overall_score === null
-        ? undefined
-        : Number(source.overall_score),
+    overall_score: normalizeScoreToHundred(source.overall_score),
     overall_label:
       source.overall_label === undefined || source.overall_label === null
         ? undefined

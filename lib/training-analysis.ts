@@ -61,6 +61,13 @@ export type TargetLine = {
   sets: string;
   note: string;
   text: string;
+  candidate_e1rm: number;
+  candidate_e1rm_display: number;
+  candidate_e1rm_ratio: number | null;
+  candidate_e1rm_limit: number;
+  candidate_e1rm_limit_display: number;
+  candidate_reps_for_e1rm: number;
+  candidate_e1rm_check: "within_limit" | "adjusted_to_limit";
 };
 
 export type SuggestedTargets = {
@@ -88,6 +95,27 @@ export type ExerciseAnalysis = {
     set_type: SetType;
     is_assisted: boolean;
   };
+  top_single: {
+    weight: number;
+    display_weight: number;
+    display_unit: WeightUnit;
+    reps: 1;
+    estimated_1rm: number;
+    estimated_1rm_display: number;
+    set_type: SetType;
+    set_order: number;
+  } | null;
+  main_set: {
+    weight: number;
+    display_weight: number;
+    display_unit: WeightUnit;
+    reps: number;
+    estimated_1rm: number;
+    estimated_1rm_display: number;
+    set_type: SetType;
+    set_order: number;
+    is_assisted: boolean;
+  } | null;
   sets: Array<{
     weight: number;
     display_weight: number;
@@ -119,6 +147,16 @@ export type ExerciseAnalysis = {
     min_reps: number | null;
     label: "none" | "single" | "consistent" | "variable" | "fatigue_drop";
   };
+  repeated_main_performance: {
+    weight: number | null;
+    display_weight: number | null;
+    display_unit: WeightUnit;
+    set_count: number;
+    max_reps: number | null;
+    min_reps: number | null;
+    label: "none" | "single" | "consistent" | "variable" | "fatigue_drop";
+    note: string;
+  };
   fatigue_drop: {
     label: "none" | "stable" | "mild" | "notable";
     reps_drop: number;
@@ -138,6 +176,8 @@ export type PreviousExerciseAnalysis = {
       session_date: string;
     }
   >;
+  previous_main_set: ExerciseAnalysis["main_set"] | null;
+  previous_repeated_main_performance: ExerciseAnalysis["repeated_main_performance"] | null;
   previous_best_set: ExerciseAnalysis["best_rm_eligible_set"] | null;
   previous_estimated_1rm: number | null;
   previous_total_volume: number | null;
@@ -185,16 +225,43 @@ export function roundOne(value: number) {
   return Math.round(value * 10) / 10;
 }
 
+function roundThree(value: number) {
+  return Math.round(value * 1000) / 1000;
+}
+
 function roundToIncrement(value: number, increment = 2.5) {
   return roundOne(Math.round(value / increment) * increment);
 }
+
+function floorToIncrement(value: number, increment = 2.5) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+
+  if (value < increment) {
+    return roundOne(value);
+  }
+
+  return roundOne(Math.floor(value / increment) * increment);
+}
+
+type TargetE1RmMetadata = {
+  candidate_e1rm: number;
+  candidate_e1rm_display: number;
+  candidate_e1rm_ratio: number | null;
+  candidate_e1rm_limit: number;
+  candidate_e1rm_limit_display: number;
+  candidate_reps_for_e1rm: number;
+  candidate_e1rm_check: "within_limit" | "adjusted_to_limit";
+};
 
 function formatTarget(
   weightKg: number,
   reps: string,
   sets: string,
   note: string,
-  weightUnit: WeightUnit
+  weightUnit: WeightUnit,
+  e1rmMetadata: TargetE1RmMetadata
 ): TargetLine {
   const displayWeight = kgToDisplayWeight(weightKg, weightUnit);
 
@@ -206,7 +273,8 @@ function formatTarget(
     reps,
     sets,
     note,
-    text: `${formatWeight(weightKg, weightUnit)} × ${reps}回 × ${sets}セット`
+    text: `${formatWeight(weightKg, weightUnit)} × ${reps}回 × ${sets}セット`,
+    ...e1rmMetadata
   };
 }
 
@@ -360,11 +428,161 @@ function getPriorityTarget(primaryGoal?: string | null, secondaryGoal?: string |
   return "hypertrophy_target";
 }
 
+type TargetCategory = "strength_target" | "hypertrophy_target" | "fatigue_management_target";
+
+const targetCategoryLabels: Record<TargetCategory, string> = {
+  strength_target: "筋力アップ優先",
+  hypertrophy_target: "筋肥大優先",
+  fatigue_management_target: "疲労管理"
+};
+
+function formatRepRange(minReps: number, maxReps: number) {
+  return minReps === maxReps ? String(maxReps) : `${minReps}〜${maxReps}`;
+}
+
+function maxWeightForCandidateE1Rm(maxAllowedE1Rm: number, maxReps: number) {
+  if (maxReps <= 1) {
+    return maxAllowedE1Rm;
+  }
+
+  return maxAllowedE1Rm / (1 + maxReps / 30);
+}
+
+function calculateCandidateE1Rm(weightKg: number, maxReps: number) {
+  if (maxReps <= 1) {
+    return weightKg;
+  }
+
+  return weightKg * (1 + maxReps / 30);
+}
+
+function buildCappedTarget(
+  draft: {
+    category: TargetCategory;
+    weightKg: number;
+    minReps: number;
+    maxReps: number;
+    sets: string;
+    note: string;
+    capRatio: number;
+  },
+  estimatedOneRepMaxKg: number,
+  weightUnit: WeightUnit,
+  adjustmentNotes: string[]
+) {
+  const maxAllowedE1Rm = estimatedOneRepMaxKg * draft.capRatio;
+  const maxAllowedWeight = floorToIncrement(
+    Math.min(draft.weightKg, maxWeightForCandidateE1Rm(maxAllowedE1Rm, draft.maxReps))
+  );
+  const targetWeight = maxAllowedWeight > 0 ? maxAllowedWeight : draft.weightKg;
+  const proposedE1Rm = estimateOneRepMax(draft.weightKg, draft.maxReps);
+  const candidateE1Rm = estimateOneRepMax(targetWeight, draft.maxReps);
+  const wasAdjusted = targetWeight < draft.weightKg;
+  const reps = formatRepRange(draft.minReps, draft.maxReps);
+
+  if (wasAdjusted) {
+    adjustmentNotes.push(
+      `${targetCategoryLabels[draft.category]} ${formatWeight(draft.weightKg, weightUnit)}×${reps}回 は候補e1RM ${formatWeight(proposedE1Rm, weightUnit)} が上限 ${formatWeight(maxAllowedE1Rm, weightUnit)} を超えるため ${formatWeight(targetWeight, weightUnit)} に補正。`
+    );
+  }
+
+  return formatTarget(
+    targetWeight,
+    reps,
+    draft.sets,
+    draft.note,
+    weightUnit,
+    {
+      candidate_e1rm: candidateE1Rm,
+      candidate_e1rm_display: kgToDisplayWeight(candidateE1Rm, weightUnit),
+      candidate_e1rm_ratio: estimatedOneRepMaxKg > 0
+        ? roundThree(candidateE1Rm / estimatedOneRepMaxKg)
+        : null,
+      candidate_e1rm_limit: roundOne(maxAllowedE1Rm),
+      candidate_e1rm_limit_display: kgToDisplayWeight(maxAllowedE1Rm, weightUnit),
+      candidate_reps_for_e1rm: draft.maxReps,
+      candidate_e1rm_check: wasAdjusted ? "adjusted_to_limit" : "within_limit"
+    }
+  );
+}
+
+function getSetSummary(set: NormalizedTrainingSet | null, displayUnit: WeightUnit) {
+  if (!set) {
+    return null;
+  }
+
+  return {
+    weight: set.weight,
+    display_weight: kgToDisplayWeight(set.weight, displayUnit),
+    display_unit: displayUnit,
+    reps: set.reps,
+    estimated_1rm: set.estimated_1rm,
+    estimated_1rm_display: kgToDisplayWeight(set.estimated_1rm, displayUnit),
+    set_type: set.effective_set_type,
+    set_order: set.set_order,
+    is_assisted: set.is_assisted
+  };
+}
+
+function getRepeatedMainPerformance(
+  workingSets: NormalizedTrainingSet[],
+  mainSet: NormalizedTrainingSet | null,
+  displayUnit: WeightUnit
+): ExerciseAnalysis["repeated_main_performance"] {
+  if (!mainSet) {
+    return {
+      weight: null,
+      display_weight: null,
+      display_unit: displayUnit,
+      set_count: 0,
+      max_reps: null,
+      min_reps: null,
+      label: "none",
+      note: "メインセットを特定できないため、同重量の再現性は判定しません。"
+    };
+  }
+
+  const sameWeightSets = workingSets.filter((set) => set.weight === mainSet.weight);
+  const reps = sameWeightSets.map((set) => set.reps);
+  const maxReps = reps.length ? Math.max(...reps) : mainSet.reps;
+  const minReps = reps.length ? Math.min(...reps) : mainSet.reps;
+  const first = sameWeightSets[0]?.reps ?? mainSet.reps;
+  const last = sameWeightSets[sameWeightSets.length - 1]?.reps ?? mainSet.reps;
+  const label =
+    sameWeightSets.length <= 1
+      ? ("single" as const)
+      : first - last >= 2
+        ? ("fatigue_drop" as const)
+        : maxReps - minReps <= 1
+          ? ("consistent" as const)
+          : ("variable" as const);
+  const note =
+    sameWeightSets.length <= 1
+      ? "メイン重量は1セットのみのため、再現性は追加データ待ちです。"
+      : label === "consistent"
+        ? "メイン重量を複数セットで再現できています。"
+        : label === "fatigue_drop"
+          ? "メイン重量内で後半の回数低下が大きく、疲労影響を考慮します。"
+          : "メイン重量内の回数差があり、次回は再現性を確認します。";
+
+  return {
+    weight: mainSet.weight,
+    display_weight: kgToDisplayWeight(mainSet.weight, displayUnit),
+    display_unit: displayUnit,
+    set_count: sameWeightSets.length,
+    max_reps: maxReps,
+    min_reps: minReps,
+    label,
+    note
+  };
+}
+
 function buildSuggestedTargets(
   exerciseName: string,
   analysisBase: {
     bestRmEligibleSet: NormalizedTrainingSet | null;
     bestSet: NormalizedTrainingSet | null;
+    topSingleSet: NormalizedTrainingSet | null;
     workingSetCount: number;
     workingSets: NormalizedTrainingSet[];
     assistedSetCount: number;
@@ -376,6 +594,7 @@ function buildSuggestedTargets(
   const representative = analysisBase.bestRmEligibleSet ?? analysisBase.bestSet;
   const guardrailNotes: string[] = [];
   const weightUnit = normalizeWeightUnit(weightUnitValue);
+  const e1RmAdjustmentNotes: string[] = [];
 
   if (!representative) {
     const emptyTargets: SuggestedTargets = {
@@ -395,43 +614,195 @@ function buildSuggestedTargets(
     guardrailNotes.push(`${exerciseName}: 補助ありセットは補助なしの実力値として過大評価しません。`);
   }
 
+  const estimatedOneRepMaxKg = representative.estimated_1rm;
   const topWeight = representative.weight;
-  const topReps = representative.reps;
+  const topReps = Math.max(1, representative.reps);
   const workingSetCount = Math.max(1, analysisBase.workingSetCount);
+  const strengthCapRatio = 1.03;
+  const hypertrophyCapRatio = 1.01;
+  const fatigueCapRatio = 0.975;
   const nextSmallJump = topWeight >= 60 && topReps >= 8 && analysisBase.bestRmEligibleSet
     ? roundToIncrement(topWeight + 2.5)
     : topWeight;
-  const cappedStrengthWeight = Math.min(nextSmallJump, roundToIncrement(topWeight * 1.035));
-  const strengthWeight = Math.max(topWeight, cappedStrengthWeight);
-  const strengthTopReps =
-    strengthWeight > topWeight
-      ? `${Math.max(1, topReps - 1)}〜${topReps}`
-      : `${topReps}〜${topReps + 1}`;
+  const strengthWeight = Math.min(nextSmallJump, roundToIncrement(topWeight * 1.035));
+  const proposedStrengthMaxReps = strengthWeight > topWeight ? topReps : topReps + 1;
+  const strengthMaxReps =
+    topReps <= 1 || calculateCandidateE1Rm(strengthWeight, proposedStrengthMaxReps) > estimatedOneRepMaxKg * strengthCapRatio
+      ? topReps
+      : proposedStrengthMaxReps;
+  const strengthMinReps = strengthWeight > topWeight
+    ? Math.max(1, topReps - 1)
+    : topReps;
   const secondarySets = Math.max(1, Math.min(2, workingSetCount - 1));
   const backoffWeight = Math.max(0, roundToIncrement(topWeight * 0.95));
-  const hypertrophyMinSets = Math.max(2, Math.min(workingSetCount, 3));
-  const hypertrophyMaxSets = Math.max(hypertrophyMinSets, Math.min(workingSetCount + 1, 4));
+  const repeatedMainSetCount = analysisBase.workingSets.filter((set) => set.weight === topWeight).length;
+  const strengthMainSets = repeatedMainSetCount >= 2
+    ? String(Math.min(repeatedMainSetCount, 3))
+    : "1〜2";
+  const strengthBackoffSets = repeatedMainSetCount >= 2
+    ? "1〜2"
+    : String(Math.max(1, secondarySets));
+  const topSingleCandidate =
+    analysisBase.topSingleSet && analysisBase.topSingleSet.weight > topWeight
+      ? analysisBase.topSingleSet
+      : null;
+  const topSingleMaxReps =
+    topSingleCandidate &&
+    calculateCandidateE1Rm(topSingleCandidate.weight, 2) <= estimatedOneRepMaxKg * strengthCapRatio
+      ? 2
+      : 1;
+  const hypertrophyMinSets = 2;
+  const hypertrophyMaxSets = Math.max(hypertrophyMinSets, Math.min(workingSetCount, 3));
   const fatigueSets = Math.max(1, Math.min(workingSetCount, 3));
-  const fatigueReps = `${Math.max(1, topReps - 1)}〜${topReps}`;
-
-  guardrailNotes.push(`${exerciseName}: 次回提案は今回の主要セット ${formatWeight(topWeight, weightUnit)}×${topReps}回 を大きく下回らない範囲に制限します。`);
-  guardrailNotes.push(`${exerciseName}: 急激な重量ジャンプを避け、上限は概ね今回主要重量の+${formatWeight(2.5, weightUnit)}前後に制限します。`);
+  const hypertrophyRanges = [
+    { min: Math.max(5, topReps + 1), max: Math.max(7, topReps + 3), weight: roundToIncrement(topWeight * 0.925), sets: formatRepRange(hypertrophyMinSets, hypertrophyMaxSets) },
+    { min: Math.max(6, topReps + 2), max: Math.max(8, topReps + 4), weight: roundToIncrement(topWeight * 0.9), sets: formatRepRange(hypertrophyMinSets, hypertrophyMaxSets) },
+    { min: Math.max(8, topReps + 4), max: Math.max(10, topReps + 6), weight: roundToIncrement(topWeight * 0.85), sets: "1〜2" }
+  ];
+  const fatigueRanges = [
+    { min: Math.max(1, topReps - 1), max: Math.max(1, topReps - 1), weight: topWeight, sets: "1" },
+    { min: topReps, max: topReps + 1, weight: backoffWeight, sets: String(Math.max(1, Math.min(2, fatigueSets))) },
+    { min: topReps + 1, max: topReps + 2, weight: roundToIncrement(topWeight * 0.9), sets: "1〜2" }
+  ];
+  const strengthTargetDrafts = [
+    ...(topSingleCandidate
+      ? [
+          {
+            category: "strength_target" as const,
+            weightKg: topSingleCandidate.weight,
+            minReps: 1,
+            maxReps: topSingleMaxReps,
+            sets: "1",
+            note: "トップシングル。高重量の感覚を確認し、無理に高回数化しません。",
+            capRatio: strengthCapRatio
+          }
+        ]
+      : []),
+    {
+      category: "strength_target" as const,
+      weightKg: strengthWeight,
+      minReps: strengthMinReps,
+      maxReps: strengthMaxReps,
+      sets: strengthMainSets,
+      note: topSingleCandidate
+        ? "今回再現できたメイン重量帯を次回も主軸にします。"
+        : "トップセット。無理に更新せず、フォームが崩れるなら据え置きます。",
+      capRatio: strengthCapRatio
+    },
+    {
+      category: "strength_target" as const,
+      weightKg: backoffWeight,
+      minReps: topReps,
+      maxReps: topReps + (topReps <= 1 ? 0 : 1),
+      sets: strengthBackoffSets,
+      note: "メイン後に高重量の再現性を補うバックオフ候補。",
+      capRatio: strengthCapRatio
+    }
+  ];
 
   const suggestedTargets: SuggestedTargets = {
-    strength_target: [
-      formatTarget(strengthWeight, strengthTopReps, "1", "トップセット。無理に更新せず、フォームが崩れるなら据え置きます。", weightUnit),
-      formatTarget(topWeight, `${Math.max(1, topReps - 1)}〜${topReps}`, String(Math.max(1, secondarySets)), "高重量の再現性を確認するメイン〜バックオフ候補。", weightUnit)
-    ],
+    strength_target: strengthTargetDrafts.map((draft) =>
+      buildCappedTarget(draft, estimatedOneRepMaxKg, weightUnit, e1RmAdjustmentNotes)
+    ),
     hypertrophy_target: [
-      formatTarget(topWeight, `${topReps}〜${topReps + 1}`, `${hypertrophyMinSets}〜${hypertrophyMaxSets}`, "同重量での複数セット再現性と総ボリュームを狙います。", weightUnit),
-      formatTarget(backoffWeight, "10〜12", "1〜2", "対象筋への刺激を残すバックオフ候補。", weightUnit)
+      buildCappedTarget(
+        {
+          category: "hypertrophy_target",
+          weightKg: hypertrophyRanges[0].weight,
+          minReps: hypertrophyRanges[0].min,
+          maxReps: hypertrophyRanges[0].max,
+          sets: hypertrophyRanges[0].sets,
+          note: "メイン重量から少し下げ、反復性能と総ボリュームを狙います。",
+          capRatio: hypertrophyCapRatio
+        },
+        estimatedOneRepMaxKg,
+        weightUnit,
+        e1RmAdjustmentNotes
+      ),
+      buildCappedTarget(
+        {
+          category: "hypertrophy_target",
+          weightKg: hypertrophyRanges[1].weight,
+          minReps: hypertrophyRanges[1].min,
+          maxReps: hypertrophyRanges[1].max,
+          sets: hypertrophyRanges[1].sets,
+          note: "高回数でも推定1RMを大きく超えない重量に抑えます。",
+          capRatio: hypertrophyCapRatio
+        },
+        estimatedOneRepMaxKg,
+        weightUnit,
+        e1RmAdjustmentNotes
+      ),
+      buildCappedTarget(
+        {
+          category: "hypertrophy_target",
+          weightKg: hypertrophyRanges[2].weight,
+          minReps: hypertrophyRanges[2].min,
+          maxReps: hypertrophyRanges[2].max,
+          sets: hypertrophyRanges[2].sets,
+          note: "対象筋への刺激を残す軽めのバックオフ候補。",
+          capRatio: hypertrophyCapRatio
+        },
+        estimatedOneRepMaxKg,
+        weightUnit,
+        e1RmAdjustmentNotes
+      )
     ],
     fatigue_management_target: [
-      formatTarget(topWeight, fatigueReps, String(fatigueSets), "重量は大きく変えず、疲労を見ながら維持します。", weightUnit),
-      formatTarget(backoffWeight, "10", "1", "体調に応じて追加する軽めの調整セット。", weightUnit)
+      buildCappedTarget(
+        {
+          category: "fatigue_management_target",
+          weightKg: fatigueRanges[0].weight,
+          minReps: fatigueRanges[0].min,
+          maxReps: fatigueRanges[0].max,
+          sets: fatigueRanges[0].sets,
+          note: "重量感だけ確認し、推定1RMを更新しにいかない調整セット。",
+          capRatio: fatigueCapRatio
+        },
+        estimatedOneRepMaxKg,
+        weightUnit,
+        e1RmAdjustmentNotes
+      ),
+      buildCappedTarget(
+        {
+          category: "fatigue_management_target",
+          weightKg: fatigueRanges[1].weight,
+          minReps: fatigueRanges[1].min,
+          maxReps: fatigueRanges[1].max,
+          sets: fatigueRanges[1].sets,
+          note: "疲労を残しすぎない範囲でメイン動作を維持します。",
+          capRatio: fatigueCapRatio
+        },
+        estimatedOneRepMaxKg,
+        weightUnit,
+        e1RmAdjustmentNotes
+      ),
+      buildCappedTarget(
+        {
+          category: "fatigue_management_target",
+          weightKg: fatigueRanges[2].weight,
+          minReps: fatigueRanges[2].min,
+          maxReps: fatigueRanges[2].max,
+          sets: fatigueRanges[2].sets,
+          note: "体調に応じて追加する軽めの調整セット。",
+          capRatio: fatigueCapRatio
+        },
+        estimatedOneRepMaxKg,
+        weightUnit,
+        e1RmAdjustmentNotes
+      )
     ],
     priority_target: getPriorityTarget(primaryGoal, secondaryGoal)
   };
+
+  guardrailNotes.push(
+    `${exerciseName}: candidate_e1rm_check: 各候補は最大rep側で候補e1RMを逆算し、推定1RM ${formatWeight(estimatedOneRepMaxKg, weightUnit)} に対して筋力${Math.round(strengthCapRatio * 100)}%、筋肥大${Math.round(hypertrophyCapRatio * 100)}%、疲労管理${roundOne(fatigueCapRatio * 100)}%を上限目安に確認済み。`
+  );
+  guardrailNotes.push(
+    `${exerciseName}: rejected_targets_due_to_e1rm: ${e1RmAdjustmentNotes.length ? e1RmAdjustmentNotes.join(" / ") : "上限超過で破棄した候補はありません。"}`
+  );
+  guardrailNotes.push(`${exerciseName}: 次回提案は今回の主要セット ${formatWeight(topWeight, weightUnit)}×${topReps}回 と推定1RMの整合性を優先します。`);
+  guardrailNotes.push(`${exerciseName}: 高回数候補は候補e1RMが現在の推定1RMを大きく超えないよう、重量を十分に下げます。`);
 
   return { suggestedTargets, guardrailNotes };
 }
@@ -452,6 +823,9 @@ export function summarizeExercise(
     NormalizedTrainingSet & { rm_exclusion_reason: string }
   >;
   const bestRmEligibleSet = getBestSet(rmEligibleSets) ?? null;
+  const topSingleSet = rmEligibleSets
+    .filter((set) => set.reps === 1)
+    .sort((a, b) => b.weight - a.weight || a.set_order - b.set_order)[0] ?? null;
   const workingSets = classifiedSets.filter(
     (set) =>
       !set.is_assisted &&
@@ -479,6 +853,7 @@ export function summarizeExercise(
     {
       bestRmEligibleSet,
       bestSet,
+      topSingleSet,
       workingSetCount: workingSets.length,
       workingSets,
       assistedSetCount: classifiedSets.filter((set) => set.is_assisted).length
@@ -486,6 +861,9 @@ export function summarizeExercise(
     options?.primaryGoal,
     options?.secondaryGoal,
     displayUnit
+  );
+  guardrailNotes.push(
+    `${exerciseName}: max_weight_vs_main_set_notes: max_weight=${formatWeight(maxWeight, displayUnit)}、top_single=${topSingleSet ? `${formatWeight(topSingleSet.weight, displayUnit)}×1回` : "なし"}、main_set=${bestRmEligibleSet ? `${formatWeight(bestRmEligibleSet.weight, displayUnit)}×${bestRmEligibleSet.reps}回` : "なし"}。最大重量、1回だけのトップシングル、複数回のメインセットを混同せず、反復性能・再現性・推定1RM・総ボリュームを分けて説明します。`
   );
   const analysis: ExerciseAnalysis = {
     exercise_name: exerciseName,
@@ -516,6 +894,19 @@ export function summarizeExercise(
           set_type: "normal",
           is_assisted: false
         },
+    top_single: topSingleSet
+      ? {
+          weight: topSingleSet.weight,
+          display_weight: kgToDisplayWeight(topSingleSet.weight, displayUnit),
+          display_unit: displayUnit,
+          reps: 1,
+          estimated_1rm: topSingleSet.estimated_1rm,
+          estimated_1rm_display: kgToDisplayWeight(topSingleSet.estimated_1rm, displayUnit),
+          set_type: topSingleSet.effective_set_type,
+          set_order: topSingleSet.set_order
+        }
+      : null,
+    main_set: getSetSummary(bestRmEligibleSet, displayUnit),
     sets: classifiedSets.map((set) => ({
       weight: set.weight,
       display_weight: kgToDisplayWeight(set.weight, displayUnit),
@@ -543,6 +934,7 @@ export function summarizeExercise(
     working_total_volume: roundOne(workingSets.reduce((sum, set) => sum + set.weight * set.reps, 0)),
     backoff_total_volume: roundOne(backoffSets.reduce((sum, set) => sum + set.weight * set.reps, 0)),
     same_weight_repetition_quality: getSameWeightQuality(workingSets),
+    repeated_main_performance: getRepeatedMainPerformance(workingSets, bestRmEligibleSet, displayUnit),
     fatigue_drop: getFatigueDrop(workingSets),
     set_classification_notes: classifiedSets
       .map((set) => set.classification_note)
@@ -745,6 +1137,8 @@ export function buildPreviousTrainingAnalysis(
 
     result[exerciseName] = {
       previous_sessions: sessions,
+      previous_main_set: latest?.main_set ?? null,
+      previous_repeated_main_performance: latest?.repeated_main_performance ?? null,
       previous_best_set: latest?.best_rm_eligible_set ?? null,
       previous_estimated_1rm: latest?.estimated_1rm_from_rm_eligible_sets ?? null,
       previous_total_volume: latest?.working_total_volume ?? null,

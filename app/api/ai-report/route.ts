@@ -17,7 +17,10 @@ import {
   compareCurrentToPrevious,
   normalizeTrainingSet,
   pickLatestVisibleSessionsByDate as pickLatestVisibleTrainingSessionsByDate,
-  type PreviousSessionForAnalysis
+  type CurrentTrainingAnalysis,
+  type PreviousExerciseAnalysis,
+  type PreviousSessionForAnalysis,
+  type SuggestedTargets
 } from "@/lib/training-analysis";
 
 export const runtime = "nodejs";
@@ -145,10 +148,7 @@ function normalizeReport(value: unknown): ReportPayload {
   const progressHighlight = String(record.progress_highlight ?? record.good_points ?? "");
 
   return {
-    overall_score:
-      record.overall_score === undefined || record.overall_score === null
-        ? undefined
-        : Number(record.overall_score),
+    overall_score: normalizeScoreToHundred(record.overall_score),
     overall_label:
       record.overall_label === undefined || record.overall_label === null
         ? undefined
@@ -195,6 +195,22 @@ function parseJsonReport(content: string): ReportPayload {
 
 function hasInput(value: unknown) {
   return value !== null && value !== undefined && String(value).trim() !== "";
+}
+
+function normalizeScoreToHundred(value: unknown) {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  const score = Number(value);
+
+  if (!Number.isFinite(score)) {
+    return undefined;
+  }
+
+  const normalized = score <= 10 ? score * 10 : score;
+
+  return Math.round(Math.max(0, Math.min(100, normalized)));
 }
 
 function addNumberIfPresent(
@@ -280,6 +296,68 @@ function buildUserFitnessContext(
     profile: Object.keys(profileContext).length ? profileContext : null,
     latest_body_measurement: Object.keys(measurementContext).length ? measurementContext : null
   };
+}
+
+function buildExerciseQualityContext(
+  currentAnalysis: CurrentTrainingAnalysis,
+  previousAnalysis: Record<string, PreviousExerciseAnalysis>
+) {
+  return currentAnalysis.exercises_summary.map((exercise) => {
+    const previous = previousAnalysis[exercise.exercise_name];
+
+    return {
+      exercise_name: exercise.exercise_name,
+      top_single: exercise.top_single,
+      main_set: exercise.main_set,
+      repeated_main_performance: exercise.repeated_main_performance,
+      estimated_1rm: exercise.estimated_1rm_from_rm_eligible_sets,
+      working_total_volume: exercise.working_total_volume,
+      previous_main_set: previous?.previous_main_set ?? null,
+      previous_repeated_main_performance:
+        previous?.previous_repeated_main_performance ?? null,
+      previous_estimated_1rm: previous?.previous_estimated_1rm ?? null,
+      previous_total_volume: previous?.previous_total_volume ?? null,
+      previous_sessions_count: previous?.previous_sessions.length ?? 0
+    };
+  });
+}
+
+function buildNextMenuStructure(suggestedTargets: Record<string, SuggestedTargets>) {
+  const toStep = (
+    target: SuggestedTargets["strength_target"][number],
+    order: number,
+    role: string
+  ) => ({
+    order,
+    role,
+    text: target.text,
+    weight_kg: target.weight_kg,
+    display_weight: target.display_weight,
+    display_unit: target.display_unit,
+    reps: target.reps,
+    sets: target.sets,
+    candidate_e1rm: target.candidate_e1rm,
+    candidate_e1rm_ratio: target.candidate_e1rm_ratio,
+    candidate_e1rm_check: target.candidate_e1rm_check
+  });
+
+  return Object.fromEntries(
+    Object.entries(suggestedTargets).map(([exerciseName, targets]) => [
+      exerciseName,
+      {
+        priority_target: targets.priority_target,
+        strength_sequence: targets.strength_target.map((target, index) =>
+          toStep(target, index + 1, index === 0 ? "top_single_or_top_set" : index === 1 ? "main_set" : "backoff")
+        ),
+        hypertrophy_sequence: targets.hypertrophy_target.map((target, index) =>
+          toStep(target, index + 1, index < 2 ? "volume_set" : "backoff")
+        ),
+        fatigue_management_sequence: targets.fatigue_management_target.map((target, index) =>
+          toStep(target, index + 1, index === 0 ? "light_top_check" : "reduced_load")
+        )
+      }
+    ])
+  );
 }
 
 async function getAuthenticatedUser(request: Request) {
@@ -441,6 +519,11 @@ export async function POST(request: Request) {
         note
       }))
     );
+    const exerciseQualityContext = buildExerciseQualityContext(
+      currentAnalysis,
+      previousAnalysis
+    );
+    const nextMenuStructure = buildNextMenuStructure(suggestedTargets);
     const goalPolicy = buildGoalTrainingPolicy(primaryGoal, secondaryGoal);
     const computedAnalysis = {
       version: "ai_report_v2",
@@ -462,6 +545,8 @@ export async function POST(request: Request) {
         ),
         previous: previousAnalysis[exercise.exercise_name] ?? {
           previous_sessions: [],
+          previous_main_set: null,
+          previous_repeated_main_performance: null,
           previous_best_set: null,
           previous_estimated_1rm: null,
           previous_total_volume: null,
@@ -472,6 +557,8 @@ export async function POST(request: Request) {
       })),
       suggested_targets: suggestedTargets,
       guardrail_notes: guardrailNotes,
+      exercise_quality_context: exerciseQualityContext,
+      next_menu_structure: nextMenuStructure,
       goal_policy: goalPolicy,
       previous_sessions_used: previousSessionsUsed
     };
@@ -488,13 +575,13 @@ export async function POST(request: Request) {
         {
           role: "system",
           content:
-            "あなたは筋トレ記録を分析するAIコーチです。初心者にも経験者にも通じる短い日本語で、パワーリフティングとボディメイクの両方を意識して診断します。医学的診断は避け、フォーム不安や痛みがある場合は専門家への相談を促します。ユーザー特性は入力済みの項目だけを使い、未入力項目は推測しません。アプリ側で計算したセット分類、RM評価対象、suggested_targets、guardrail_notesを最優先し、それらと矛盾する重量・回数・セット数を提案しないでください。必ずJSONだけを返してください。"
+            "あなたは筋トレ記録を分析するAIコーチです。初心者にも経験者にも通じる短い日本語で、パワーリフティングとボディメイクの両方を意識して診断します。医学的診断は避け、フォーム不安や痛みがある場合は専門家への相談を促します。ユーザー特性は入力済みの項目だけを使い、未入力項目は推測しません。overall_scoreは必ず100点満点の整数で返し、8.5のような10点満点表記は返さないでください。アプリ側で計算したセット分類、RM評価対象、suggested_targets、guardrail_notes、exercise_quality_context、next_menu_structureを最優先し、それらと矛盾する重量・回数・セット数を提案しないでください。最大重量、1回だけのトップシングル、メインセット、同重量の再現性、推定1RM、総ボリュームを分けて説明し、最大重量が下がった/上がったという表現を雑に使わないでください。必ずJSONだけを返してください。"
         },
         {
           role: "user",
           content: JSON.stringify({
             required_json_shape: {
-              overall_score: "number",
+              overall_score: "number 0-100",
               overall_label: "string",
               summary: "string",
               progress_highlight: "string",
@@ -521,11 +608,14 @@ export async function POST(request: Request) {
               cautions: "string",
               next_workout: "string"
             },
+            score_scale: 100,
             instruction:
-              "computed_analysisを最優先で使って、今日のセッション全体、種目別、前回比較、直近3回傾向を診断してください。workout_sets.weight、computed_analysis内のweight、max_weight、estimated_1rmはkg正本です。表示文ではuser_fitness_context.profile.weight_unit、computed_analysisのdisplay_weight、estimated_1rm_display、suggested_targetsのdisplay_weight/textを使い、kg値をそのままlbとして表記しないでください。セット種別を尊重し、メインセットとRM評価対象セットを中心に判断してください。アップセットを通常セットとして評価せず、補助ありセットを実力値として過大評価せず、ドロップセットを筋力低下として誤解しないでください。推定1RMはestimated_1rm_from_rm_eligible_setsを中心に判断し、最大重量だけで下降判定しないでください。declining判定は、推定1RM、working volume、同重量での回数、直近傾向が複数悪い場合に限定してください。次回提案はsuggested_targetsを優先して使い、suggested_targetsやguardrail_notesと矛盾する提案をしないでください。各exercise_diagnosticsにはnext_targetとsuggested_setsを必ず入れてください。suggested_setsはsuggested_targetsの優先候補から選んでください。目的に応じて提案を分け、トレーナーが見ても無茶に感じる提案、トレーニーが見ても弱すぎる/強すぎる提案を避けてください。user_fitness_contextに目的や体組成がある場合だけ考慮してください。未入力情報は推測しないでください。日本語で、スマホで読みやすく、長すぎない文量にしてください。",
+              "computed_analysisを最優先で使って、今日のセッション全体、種目別、前回比較、直近3回傾向を診断してください。overall_scoreは100点満点の整数で返し、85点相当なら85、75点相当なら75を返してください。8.5のような10点満点の値は返さないでください。workout_sets.weight、computed_analysis内のweight、max_weight、estimated_1rmはkg正本です。表示文ではuser_fitness_context.profile.weight_unit、computed_analysisのdisplay_weight、estimated_1rm_display、suggested_targetsのdisplay_weight/textを使い、kg値をそのままlbとして表記しないでください。セット種別を尊重し、メインセットとRM評価対象セットを中心に判断してください。アップセットを通常セットとして評価せず、補助ありセットを実力値として過大評価せず、ドロップセットを筋力低下として誤解しないでください。推定1RMはestimated_1rm_from_rm_eligible_setsを中心に判断し、最大重量だけで下降判定しないでください。max_weightはその日の最大重量、top_singleは1回だけの高重量確認、main_setは主な評価対象、repeated_main_performanceは同重量で複数セットできたかを表します。今日の伸びでは、最大重量そのものの変化、トップシングル、メインセットの反復性能、再現性、推定1RM、総ボリュームを分けて説明してください。70kg×1と67.5kg×4がある場合は、70kgのシングルで高重量への適応を確認し、67.5kg帯での反復性能と再現性を見る、という形で表現してください。「最大重量が70kgから67.5kgに向上」のように最大重量とメインセットを混同した矛盾表現は禁止です。前回比ではcomputed_analysis.exercises_summary[].previous、previous_sessions_used、exercise_quality_contextを使い、同重量での最大回数だけでなく、同重量のセット数、main_set、repeated_main_performance、estimated_1rm、working_total_volumeを比較してください。前回データがない、またはprevious_sessions_countが0の場合は、断定せず「前回データ不足」と明示してください。前回が67.5kg×4を1セット、今回が67.5kg×4を2セットなら、同重量・同回数を維持しつつ再現セット数が増えたと説明してください。前回も同等なら、高重量確認後でもメインセットを再現できた点を評価してください。declining判定は、推定1RM、working volume、同重量での回数、直近傾向が複数悪い場合に限定してください。次回提案はsuggested_targetsとnext_menu_structureを優先して使い、今回達成済みのメインセットより明らかに弱い内容を主提案にしないでください。70kg×1が達成済みなら、candidate_e1rm_checkの範囲内でトップシングル候補として70kg×1〜2を出して構いませんが、70kgを高回数で提案しないでください。suggested_targetsやguardrail_notesと矛盾する提案は禁止です。suggested_targetsのcandidate_e1rm_checkを確認し、candidate_e1rmが現在のestimated_1rmを大きく超える重量・回数・セット数を提案しないでください。各exercise_diagnosticsにはnext_targetとsuggested_setsを必ず入れてください。suggested_setsはsuggested_targetsの優先候補から選んでください。next_workoutは具体的な重量・回数・セット数・実行順を含め、可能ならトップシングル→メインセット→バックオフの順で、そのまま実行できる文章にしてください。候補を羅列するだけでなく、余力がある場合と疲労が強い場合の逃げ道を一言入れてください。目的に応じて提案を分け、トレーナーが見ても無茶に感じる提案、トレーニーが見ても弱すぎる/強すぎる提案を避けてください。user_fitness_contextに目的や体組成がある場合だけ考慮してください。未入力情報は推測しないでください。日本語で、スマホで読みやすく、長すぎない文量にしてください。",
             goal_policy: goalPolicy,
             user_fitness_context: userFitnessContext,
             computed_analysis: computedAnalysis,
+            exercise_quality_context: exerciseQualityContext,
+            next_menu_structure: nextMenuStructure,
             suggested_targets: suggestedTargets,
             guardrail_notes: guardrailNotes
           })
@@ -562,10 +652,13 @@ export async function POST(request: Request) {
           raw_json: {
             version: "ai_report_v2",
             model: "gpt-4o-mini",
+            score_scale: 100,
             response: report,
             computed_analysis: computedAnalysis,
             exercise_diagnostics: report.exercise_diagnostics ?? [],
             suggested_targets: suggestedTargets,
+            exercise_quality_context: exerciseQualityContext,
+            next_menu_structure: nextMenuStructure,
             previous_sessions_used: previousSessionsUsed,
             user_fitness_context: userFitnessContext,
             guardrail_notes: guardrailNotes,
