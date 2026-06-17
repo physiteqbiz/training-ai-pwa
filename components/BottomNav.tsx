@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 const items = [
   { href: "/", label: "ホーム" },
   { href: "/workouts/new", label: "記録" },
+  { href: "/progress", label: "進捗" },
   { href: "/settings", label: "設定" }
 ];
 
