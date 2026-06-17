@@ -10,6 +10,7 @@ import {
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { requireEnv } from "@/lib/env";
+import { formatWeight } from "@/lib/weight-unit";
 import {
   buildCurrentTrainingAnalysis,
   buildGoalTrainingPolicy,
@@ -211,6 +212,138 @@ function normalizeScoreToHundred(value: unknown) {
   const normalized = score <= 10 ? score * 10 : score;
 
   return Math.round(Math.max(0, Math.min(100, normalized)));
+}
+
+function getOverallLabel(score: number) {
+  if (score >= 95) {
+    return "素晴らしい";
+  }
+
+  if (score >= 85) {
+    return "非常に良好";
+  }
+
+  if (score >= 75) {
+    return "良好";
+  }
+
+  if (score >= 60) {
+    return "普通";
+  }
+
+  if (score >= 40) {
+    return "やや不調";
+  }
+
+  return "大きく不調";
+}
+
+function hasExceptionalProgress(
+  currentAnalysis: CurrentTrainingAnalysis,
+  previousAnalysis: Record<string, PreviousExerciseAnalysis>
+) {
+  return currentAnalysis.exercises_summary.some((exercise) => {
+    const previous = previousAnalysis[exercise.exercise_name];
+    const currentRm = exercise.estimated_1rm_from_rm_eligible_sets;
+    const previousRm = previous?.previous_estimated_1rm;
+    const currentVolume = exercise.working_total_volume;
+    const previousVolume = previous?.previous_total_volume;
+    const rmImprovement =
+      currentRm && previousRm ? (currentRm - previousRm) / previousRm : 0;
+    const volumeImprovement =
+      currentVolume && previousVolume
+        ? (currentVolume - previousVolume) / previousVolume
+        : 0;
+
+    return (
+      rmImprovement >= 0.06 ||
+      (rmImprovement >= 0.035 &&
+        volumeImprovement >= 0.12 &&
+        exercise.repeated_main_performance.label === "consistent")
+    );
+  });
+}
+
+function buildProgressHighlightFallback(currentAnalysis: CurrentTrainingAnalysis) {
+  const exercise = currentAnalysis.exercises_summary[0];
+
+  if (!exercise?.top_single || !exercise.main_set) {
+    return null;
+  }
+
+  const repeated = exercise.repeated_main_performance;
+  const repeatedText =
+    repeated.set_count >= 2 && repeated.weight !== null
+      ? `${formatWeight(repeated.weight, exercise.weight_unit)}×${repeated.max_reps ?? exercise.main_set.reps}回を${repeated.set_count}セット再現`
+      : `${formatWeight(exercise.main_set.weight, exercise.weight_unit)}×${exercise.main_set.reps}回をメインセットとして実施`;
+
+  return `${exercise.exercise_name}はトップシングル${formatWeight(exercise.top_single.weight, exercise.weight_unit)}×1回で高重量への適応を確認し、メインセットでは${repeatedText}しました。高重量確認後でもメイン重量帯の出力が落ちていないため、単発の強さと反復性能の両方が安定しています。`;
+}
+
+function buildPracticalCaution(currentAnalysis: CurrentTrainingAnalysis) {
+  const exercise = currentAnalysis.exercises_summary[0];
+
+  if (!exercise?.main_set) {
+    return "次回もフォームが崩れない重量を優先し、後半セットで回数が落ちる場合は重量を下げて再現性を確保してください。";
+  }
+
+  if (exercise.top_single) {
+    return `${exercise.exercise_name}は${formatWeight(exercise.top_single.weight, exercise.weight_unit)}×1回の後に${formatWeight(exercise.main_set.weight, exercise.weight_unit)}×${exercise.main_set.reps}回を重ねる構成です。腰の反りや押し出しで無理に回数を稼がず、${exercise.main_set.reps}回目で軌道が崩れる場合は${formatWeight(exercise.main_set.weight, exercise.weight_unit)}を据え置くか${formatWeight(Math.max(0, exercise.main_set.weight - 2.5), exercise.weight_unit)}へ落として再現性を優先してください。`;
+  }
+
+  return `${exercise.exercise_name}は${formatWeight(exercise.main_set.weight, exercise.weight_unit)}×${exercise.main_set.reps}回が主な評価対象です。後半セットで軌道や反動が大きくなる場合は、同重量の回数更新よりも重量を少し落として安定した反復を優先してください。`;
+}
+
+function isGenericCaution(cautions: string) {
+  const trimmed = cautions.trim();
+
+  if (!trimmed) {
+    return true;
+  }
+
+  return (
+    trimmed.length <= 80 &&
+    /専門家|医師|相談/.test(trimmed) &&
+    !/\d/.test(trimmed)
+  );
+}
+
+function calibrateReport(
+  report: ReportPayload,
+  currentAnalysis: CurrentTrainingAnalysis,
+  previousAnalysis: Record<string, PreviousExerciseAnalysis>
+): ReportPayload {
+  const rawScore = report.overall_score;
+  const exceptional = hasExceptionalProgress(currentAnalysis, previousAnalysis);
+  const calibratedScore =
+    rawScore === undefined
+      ? undefined
+      : rawScore >= 91 && !exceptional
+        ? 90
+        : rawScore >= 98 && exceptional
+          ? 97
+          : rawScore;
+  const progressFallback = buildProgressHighlightFallback(currentAnalysis);
+  const progressHighlight =
+    progressFallback &&
+    !/高重量確認後|反復性能|再現性/.test(report.progress_highlight ?? "")
+      ? progressFallback
+      : report.progress_highlight;
+  const cautions = isGenericCaution(report.cautions)
+    ? buildPracticalCaution(currentAnalysis)
+    : report.cautions;
+
+  return {
+    ...report,
+    overall_score: calibratedScore,
+    overall_label:
+      calibratedScore === undefined
+        ? report.overall_label
+        : getOverallLabel(calibratedScore),
+    progress_highlight: progressHighlight,
+    good_points: progressHighlight ?? report.good_points,
+    cautions
+  };
 }
 
 function addNumberIfPresent(
@@ -575,7 +708,7 @@ export async function POST(request: Request) {
         {
           role: "system",
           content:
-            "あなたは筋トレ記録を分析するAIコーチです。初心者にも経験者にも通じる短い日本語で、パワーリフティングとボディメイクの両方を意識して診断します。医学的診断は避け、フォーム不安や痛みがある場合は専門家への相談を促します。ユーザー特性は入力済みの項目だけを使い、未入力項目は推測しません。overall_scoreは必ず100点満点の整数で返し、8.5のような10点満点表記は返さないでください。アプリ側で計算したセット分類、RM評価対象、suggested_targets、guardrail_notes、exercise_quality_context、next_menu_structureを最優先し、それらと矛盾する重量・回数・セット数を提案しないでください。最大重量、1回だけのトップシングル、メインセット、同重量の再現性、推定1RM、総ボリュームを分けて説明し、最大重量が下がった/上がったという表現を雑に使わないでください。必ずJSONだけを返してください。"
+            "あなたは筋トレ記録を分析するAIコーチです。初心者にも経験者にも通じる短い日本語で、パワーリフティングとボディメイクの両方を意識して診断します。医学的診断は避けます。痛み、違和感、既往歴、医療リスクが入力されている場合だけ専門家への相談を促し、通常の注意点では種目・重量構成・疲労に応じた実用的な注意を書いてください。ユーザー特性は入力済みの項目だけを使い、未入力項目は推測しません。overall_scoreは必ず100点満点の整数で返し、8.5のような10点満点表記は返さないでください。95〜100点は大幅PR更新、計画以上、疲労管理も非常に良い場合だけに限定し、良好でも改善余地がある内容は85〜90点程度にしてください。アプリ側で計算したセット分類、RM評価対象、suggested_targets、guardrail_notes、exercise_quality_context、next_menu_structureを最優先し、それらと矛盾する重量・回数・セット数を提案しないでください。最大重量、1回だけのトップシングル、メインセット、同重量の再現性、推定1RM、総ボリュームを分けて説明し、最大重量が下がった/上がったという表現を雑に使わないでください。必ずJSONだけを返してください。"
         },
         {
           role: "user",
@@ -609,8 +742,16 @@ export async function POST(request: Request) {
               next_workout: "string"
             },
             score_scale: 100,
+            score_rubric: {
+              "95_100": "大幅な自己ベスト更新、計画以上の非常に優れた内容。かなり限定的に使う。",
+              "85_94": "非常に良好。メインセット再現性、推定1RM、ボリュームのいずれかが明確に良い。",
+              "75_84": "良好。順調だが改善余地あり。",
+              "60_74": "普通。維持または小さな改善。",
+              "40_59": "やや不調。",
+              "0_39": "大きく不調。"
+            },
             instruction:
-              "computed_analysisを最優先で使って、今日のセッション全体、種目別、前回比較、直近3回傾向を診断してください。overall_scoreは100点満点の整数で返し、85点相当なら85、75点相当なら75を返してください。8.5のような10点満点の値は返さないでください。workout_sets.weight、computed_analysis内のweight、max_weight、estimated_1rmはkg正本です。表示文ではuser_fitness_context.profile.weight_unit、computed_analysisのdisplay_weight、estimated_1rm_display、suggested_targetsのdisplay_weight/textを使い、kg値をそのままlbとして表記しないでください。セット種別を尊重し、メインセットとRM評価対象セットを中心に判断してください。アップセットを通常セットとして評価せず、補助ありセットを実力値として過大評価せず、ドロップセットを筋力低下として誤解しないでください。推定1RMはestimated_1rm_from_rm_eligible_setsを中心に判断し、最大重量だけで下降判定しないでください。max_weightはその日の最大重量、top_singleは1回だけの高重量確認、main_setは主な評価対象、repeated_main_performanceは同重量で複数セットできたかを表します。今日の伸びでは、最大重量そのものの変化、トップシングル、メインセットの反復性能、再現性、推定1RM、総ボリュームを分けて説明してください。70kg×1と67.5kg×4がある場合は、70kgのシングルで高重量への適応を確認し、67.5kg帯での反復性能と再現性を見る、という形で表現してください。「最大重量が70kgから67.5kgに向上」のように最大重量とメインセットを混同した矛盾表現は禁止です。前回比ではcomputed_analysis.exercises_summary[].previous、previous_sessions_used、exercise_quality_contextを使い、同重量での最大回数だけでなく、同重量のセット数、main_set、repeated_main_performance、estimated_1rm、working_total_volumeを比較してください。前回データがない、またはprevious_sessions_countが0の場合は、断定せず「前回データ不足」と明示してください。前回が67.5kg×4を1セット、今回が67.5kg×4を2セットなら、同重量・同回数を維持しつつ再現セット数が増えたと説明してください。前回も同等なら、高重量確認後でもメインセットを再現できた点を評価してください。declining判定は、推定1RM、working volume、同重量での回数、直近傾向が複数悪い場合に限定してください。次回提案はsuggested_targetsとnext_menu_structureを優先して使い、今回達成済みのメインセットより明らかに弱い内容を主提案にしないでください。70kg×1が達成済みなら、candidate_e1rm_checkの範囲内でトップシングル候補として70kg×1〜2を出して構いませんが、70kgを高回数で提案しないでください。suggested_targetsやguardrail_notesと矛盾する提案は禁止です。suggested_targetsのcandidate_e1rm_checkを確認し、candidate_e1rmが現在のestimated_1rmを大きく超える重量・回数・セット数を提案しないでください。各exercise_diagnosticsにはnext_targetとsuggested_setsを必ず入れてください。suggested_setsはsuggested_targetsの優先候補から選んでください。next_workoutは具体的な重量・回数・セット数・実行順を含め、可能ならトップシングル→メインセット→バックオフの順で、そのまま実行できる文章にしてください。候補を羅列するだけでなく、余力がある場合と疲労が強い場合の逃げ道を一言入れてください。目的に応じて提案を分け、トレーナーが見ても無茶に感じる提案、トレーニーが見ても弱すぎる/強すぎる提案を避けてください。user_fitness_contextに目的や体組成がある場合だけ考慮してください。未入力情報は推測しないでください。日本語で、スマホで読みやすく、長すぎない文量にしてください。",
+              "computed_analysisを最優先で使って、今日のセッション全体、種目別、前回比較、直近3回傾向を診断してください。overall_scoreは100点満点の整数で返し、85点相当なら85、75点相当なら75を返してください。8.5のような10点満点の値は返さないでください。点数はscore_rubricに従い、95〜100点は大幅PR更新、狙い通りの全セット達成、疲労管理も非常に良い場合だけに限定してください。良好でも後半の重量低下、筋肥大向けボリュームやレップレンジの改善余地がある場合は85〜90点程度にしてください。overall_labelは点数に合わせ、85〜94点は「非常に良好」、75〜84点は「良好」、60〜74点は「普通」、40〜59点は「やや不調」を目安にしてください。workout_sets.weight、computed_analysis内のweight、max_weight、estimated_1rmはkg正本です。表示文ではuser_fitness_context.profile.weight_unit、computed_analysisのdisplay_weight、estimated_1rm_display、suggested_targetsのdisplay_weight/textを使い、kg値をそのままlbとして表記しないでください。セット種別を尊重し、メインセットとRM評価対象セットを中心に判断してください。アップセットを通常セットとして評価せず、補助ありセットを実力値として過大評価せず、ドロップセットを筋力低下として誤解しないでください。推定1RMはestimated_1rm_from_rm_eligible_setsを中心に判断し、最大重量だけで下降判定しないでください。max_weightはその日の最大重量、top_singleは1回だけの高重量確認、main_setは主な評価対象、repeated_main_performanceは同重量で複数セットできたかを表します。今日の伸びでは、最大重量そのものの変化、トップシングル、メインセットの反復性能、再現性、推定1RM、総ボリュームを分けて説明してください。70kg×1と67.5kg×4がある場合は、70kgのシングルで高重量への適応を確認し、67.5kg帯での反復性能と再現性を見る、という形で表現してください。高重量確認後でもメイン重量帯の出力が落ちていない場合は、単発の強さと反復性能の両方が安定していると短く説明してください。「最大重量が70kgから67.5kgに向上」のように最大重量とメインセットを混同した矛盾表現は禁止です。前回比ではcomputed_analysis.exercises_summary[].previous、previous_sessions_used、exercise_quality_contextを使い、同重量での最大回数だけでなく、同重量のセット数、main_set、repeated_main_performance、estimated_1rm、working_total_volumeを比較してください。前回データがない、またはprevious_sessions_countが0の場合は、断定せず「前回データ不足」と明示してください。前回が67.5kg×4を1セット、今回が67.5kg×4を2セットなら、同重量・同回数を維持しつつ再現セット数が増えたと説明してください。前回も同等なら、高重量確認後でもメインセットを再現できた点を評価してください。declining判定は、推定1RM、working volume、同重量での回数、直近傾向が複数悪い場合に限定してください。cautionsは「専門家に相談してください」だけで終えず、種目・重量構成・疲労に応じた実用的な注意を書いてください。痛み、違和感、既往歴、医療リスクが入力されている場合だけ専門家相談の表現を使ってください。次回提案はsuggested_targetsとnext_menu_structureを優先して使い、今回達成済みのメインセットより明らかに弱い内容を主提案にしないでください。70kg×1が達成済みなら、candidate_e1rm_checkの範囲内でトップシングル候補として70kg×1〜2を出して構いませんが、70kgを高回数で提案しないでください。suggested_targetsやguardrail_notesと矛盾する提案は禁止です。suggested_targetsのcandidate_e1rm_checkを確認し、candidate_e1rmが現在のestimated_1rmを大きく超える重量・回数・セット数を提案しないでください。各exercise_diagnosticsにはnext_targetとsuggested_setsを必ず入れてください。suggested_setsはsuggested_targetsの優先候補から選んでください。next_workoutは具体的な重量・回数・セット数・実行順を含め、可能ならトップシングル→メインセット→バックオフの順で、そのまま実行できる文章にしてください。候補を羅列するだけでなく、余力がある場合と疲労が強い場合の逃げ道を一言入れてください。目的に応じて提案を分け、トレーナーが見ても無茶に感じる提案、トレーニーが見ても弱すぎる/強すぎる提案を避けてください。user_fitness_contextに目的や体組成がある場合だけ考慮してください。未入力情報は推測しないでください。日本語で、スマホで読みやすく、長すぎない文量にしてください。",
             goal_policy: goalPolicy,
             user_fitness_context: userFitnessContext,
             computed_analysis: computedAnalysis,
@@ -624,7 +765,11 @@ export async function POST(request: Request) {
     });
 
     const content = completion.choices[0]?.message?.content ?? "{}";
-    const report = parseJsonReport(content);
+    const report = calibrateReport(
+      parseJsonReport(content),
+      currentAnalysis,
+      previousAnalysis
+    );
 
     if (!report.summary || !report.next_workout || !report.exercise_diagnostics?.length) {
       console.error("ai report v2 validation error", {
