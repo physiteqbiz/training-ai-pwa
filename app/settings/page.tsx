@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 import { type BillingProfile, normalizeAiQuota } from "@/lib/billing";
+import { getLocalDateInputValue } from "@/lib/date-input";
 import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
 import { normalizeWeightUnit, type WeightUnit } from "@/lib/weight-unit";
 
@@ -53,10 +54,6 @@ const weightUnitOptions: Array<{ value: WeightUnit; label: string }> = [
 
 const weightIncrementOptions = [1, 1.25, 2.5, 5];
 
-function todayString() {
-  return new Date().toISOString().slice(0, 10);
-}
-
 function nullableText(value: string) {
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
@@ -86,7 +83,7 @@ export default function SettingsPage() {
   const [primaryGoal, setPrimaryGoal] = useState<Goal>("");
   const [secondaryGoal, setSecondaryGoal] = useState<Goal>("");
   const [bodyMeasurementId, setBodyMeasurementId] = useState("");
-  const [measuredAt, setMeasuredAt] = useState(todayString());
+  const [measuredAt, setMeasuredAt] = useState(getLocalDateInputValue());
   const [weightKg, setWeightKg] = useState("");
   const [bodyFatPercent, setBodyFatPercent] = useState("");
   const [skeletalMuscleMassKg, setSkeletalMuscleMassKg] = useState("");
@@ -198,7 +195,7 @@ export default function SettingsPage() {
       } else if (measurementResult.data) {
         const measurement = measurementResult.data;
         setBodyMeasurementId(measurement.id ?? "");
-        setMeasuredAt(measurement.measured_at ?? todayString());
+        setMeasuredAt(measurement.measured_at ?? getLocalDateInputValue());
         setWeightKg(measurement.weight_kg == null ? "" : String(Number(measurement.weight_kg)));
         setBodyFatPercent(
           measurement.body_fat_percent == null ? "" : String(Number(measurement.body_fat_percent))
@@ -218,6 +215,8 @@ export default function SettingsPage() {
         );
         setMeasurementDevice((measurement.measurement_device ?? "") as MeasurementDevice);
         setMeasurementMemo(measurement.memo ?? "");
+      } else {
+        setMeasuredAt(getLocalDateInputValue());
       }
 
       if (billingResult.error) {
@@ -282,7 +281,7 @@ export default function SettingsPage() {
 
     const payload = {
       user_id: userId,
-      measured_at: measuredAt || todayString(),
+      measured_at: measuredAt || getLocalDateInputValue(),
       weight_kg: nullableNumber(weightKg),
       body_fat_percent: nullableNumber(bodyFatPercent),
       skeletal_muscle_mass_kg: nullableNumber(skeletalMuscleMassKg),

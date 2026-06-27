@@ -3,6 +3,7 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
 
+import { getLocalDateInputValue } from "@/lib/date-input";
 import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
 import {
   displayWeightToKg,
@@ -125,10 +126,6 @@ type WorkoutSummary = {
   setCount: number;
 };
 
-function todayString() {
-  return new Date().toISOString().slice(0, 10);
-}
-
 function createLocalId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
@@ -234,8 +231,12 @@ function groupPreviousSets(previousSets: PreviousSet[]) {
 function NewWorkoutPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const queryDateParam = searchParams.get("date");
+  const querySessionIdParam = searchParams.get("sessionId");
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
-  const [sessionDate, setSessionDate] = useState(searchParams.get("date") ?? todayString());
+  const [sessionDate, setSessionDate] = useState(
+    queryDateParam ?? getLocalDateInputValue()
+  );
   const [categories, setCategories] = useState<ExerciseCategory[]>([]);
   const [exercises, setExercises] = useState<Exercise[]>([]);
   const [workoutExercises, setWorkoutExercises] = useState<WorkoutExerciseBlock[]>([]);
@@ -261,6 +262,15 @@ function NewWorkoutPageContent() {
     () => [-2 * weightIncrement, -weightIncrement, weightIncrement, 2 * weightIncrement],
     [weightIncrement]
   );
+
+  useEffect(() => {
+    if (querySessionIdParam || queryDateParam) {
+      return;
+    }
+
+    setSessionDate(getLocalDateInputValue());
+  }, [queryDateParam, querySessionIdParam]);
+
   const exerciseSummaries = useMemo(
     () =>
       Object.fromEntries(
@@ -602,7 +612,7 @@ function NewWorkoutPageContent() {
 
       const loadedExercises = (exercisesResult.data ?? []) as Exercise[];
       const querySessionId = searchParams.get("sessionId");
-      const queryDate = searchParams.get("date") ?? todayString();
+      const queryDate = searchParams.get("date") ?? getLocalDateInputValue();
       const queryFocusExercise = searchParams.get("focusExercise") ?? "";
 
       setFocusExercise(queryFocusExercise);
