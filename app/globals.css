@@ -192,6 +192,47 @@ summary {
   min-width: 0;
 }
 
+.workout-date-card {
+  grid-template-columns: minmax(0, 1fr);
+  inline-size: 100%;
+  max-inline-size: 100%;
+}
+
+.workout-date-field {
+  grid-template-columns: minmax(0, 1fr);
+  inline-size: 100%;
+  max-inline-size: 100%;
+}
+
+.workout-date-input {
+  display: block;
+  box-sizing: border-box;
+  inline-size: 100%;
+  width: 100%;
+  max-inline-size: 100%;
+  max-width: 100%;
+  min-inline-size: 0;
+  min-width: 0;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.workout-date-input::-webkit-date-and-time-value {
+  inline-size: 100%;
+  max-inline-size: 100%;
+  min-width: 0;
+  text-align: left;
+}
+
+.workout-date-input::-webkit-datetime-edit {
+  max-inline-size: 100%;
+  min-inline-size: 0;
+}
+
+.workout-date-input::-webkit-calendar-picker-indicator {
+  flex: 0 0 auto;
+}
+
 .input:focus {
   border-color: var(--accent);
 }

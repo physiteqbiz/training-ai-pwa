@@ -1011,11 +1011,11 @@ function NewWorkoutPageContent() {
         <h1>トレーニング入力</h1>
       </header>
 
-      <section className="panel">
-        <label className="field">
+      <section className="panel workout-date-card">
+        <label className="field workout-date-field">
           <span>セッション日付</span>
           <input
-            className="input"
+            className="input workout-date-input"
             type="date"
             value={sessionDate}
             onChange={(event) => void handleDateChange(event.target.value)}
