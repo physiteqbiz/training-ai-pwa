@@ -1042,6 +1042,116 @@ summary {
   color: var(--accent);
 }
 
+.trend-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.trend-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0e1215;
+  padding: 12px;
+}
+
+.trend-card__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.trend-card__head h3 {
+  color: var(--accent-2);
+  font-size: 0.98rem;
+}
+
+.trend-card__head strong {
+  color: var(--accent);
+  font-size: 1.05rem;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.trend-values {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.trend-values b {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.trend-values b.is-positive {
+  color: var(--accent);
+}
+
+.trend-values b.is-negative {
+  color: var(--danger);
+}
+
+.trend-svg {
+  display: block;
+  width: 100%;
+  min-height: 150px;
+  overflow: visible;
+}
+
+.trend-grid-line {
+  stroke: #26302b;
+  stroke-width: 1;
+}
+
+.trend-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
+}
+
+.trend-point {
+  fill: #0e1215;
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.trend-date-label {
+  fill: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.trend-date-label--end {
+  text-anchor: end;
+}
+
+.history-details {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #11171a;
+  padding: 12px;
+}
+
+.history-details summary {
+  color: var(--accent-2);
+  font-size: 0.9rem;
+}
+
+.history-details[open] summary {
+  margin-bottom: 10px;
+}
+
 .chart-list {
   display: grid;
   gap: 10px;

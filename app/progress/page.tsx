@@ -93,6 +93,8 @@ type BodyPartSummary = {
   volume: number;
 };
 
+type TrendMetric = "e1rm" | "maxWeight" | "sessionVolume";
+
 const numberFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 1
 });
@@ -393,6 +395,63 @@ function getMaxValue(points: HistoryPoint[], key: "e1rm" | "maxWeight" | "sessio
   return Math.max(1, ...points.map((point) => point[key]));
 }
 
+function formatSignedDisplayValue(valueKg: number, unit: WeightUnit) {
+  const converted = kgToDisplayWeight(Math.abs(valueKg), unit);
+  const sign = valueKg > 0 ? "+" : valueKg < 0 ? "-" : "";
+
+  return `${sign}${formatDisplayNumber(converted)}${unit}`;
+}
+
+function formatMetricValue(metric: TrendMetric, valueKg: number, unit: WeightUnit) {
+  return metric === "sessionVolume"
+    ? formatDisplayVolume(valueKg, unit)
+    : formatDisplayWeight(valueKg, unit);
+}
+
+function formatMetricDelta(metric: TrendMetric, valueKg: number, unit: WeightUnit) {
+  return metric === "sessionVolume"
+    ? formatSignedDisplayValue(valueKg, unit)
+    : formatSignedDisplayValue(valueKg, unit);
+}
+
+function getTrendPoints(points: HistoryPoint[], metric: TrendMetric) {
+  return points
+    .map((point) => ({
+      date: point.date,
+      value: point[metric]
+    }))
+    .filter((point) => point.value > 0);
+}
+
+function buildTrendPath(points: Array<{ date: string; value: number }>) {
+  const width = 320;
+  const height = 150;
+  const paddingX = 18;
+  const paddingTop = 12;
+  const paddingBottom = 26;
+  const chartWidth = width - paddingX * 2;
+  const chartHeight = height - paddingTop - paddingBottom;
+  const values = points.map((point) => point.value);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min;
+  const yFor = (value: number) =>
+    range === 0
+      ? paddingTop + chartHeight / 2
+      : paddingTop + chartHeight - ((value - min) / range) * chartHeight;
+
+  const coordinates = points.map((point, index) => ({
+    ...point,
+    x: paddingX + (chartWidth * index) / Math.max(1, points.length - 1),
+    y: yFor(point.value)
+  }));
+  const path = coordinates
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`)
+    .join(" ");
+
+  return { width, height, path, coordinates };
+}
+
 function rangeHref(range: ProgressRange, exerciseName: string) {
   const exerciseQuery = exerciseName ? `&exercise=${encodeURIComponent(exerciseName)}` : "";
 
@@ -524,6 +583,105 @@ function ChartRows({
         </div>
       ))}
     </div>
+  );
+}
+
+function TrendLineSvg({ points }: { points: Array<{ date: string; value: number }> }) {
+  const trend = buildTrendPath(points);
+  const firstPoint = trend.coordinates[0];
+  const lastPoint = trend.coordinates[trend.coordinates.length - 1];
+
+  return (
+    <svg
+      className="trend-svg"
+      viewBox={`0 0 ${trend.width} ${trend.height}`}
+      role="img"
+      aria-label={`${firstPoint?.date ?? ""}から${lastPoint?.date ?? ""}までの推移`}
+    >
+      <line className="trend-grid-line" x1="18" x2="302" y1="12" y2="12" />
+      <line className="trend-grid-line" x1="18" x2="302" y1="68" y2="68" />
+      <line className="trend-grid-line" x1="18" x2="302" y1="124" y2="124" />
+      <path className="trend-line" d={trend.path} />
+      {trend.coordinates.map((point) => (
+        <circle
+          className="trend-point"
+          key={`${point.date}-${point.x}`}
+          cx={point.x}
+          cy={point.y}
+          r="3.5"
+        />
+      ))}
+      {firstPoint ? (
+        <text className="trend-date-label" x="18" y="144">
+          {firstPoint.date.slice(5)}
+        </text>
+      ) : null}
+      {lastPoint ? (
+        <text className="trend-date-label trend-date-label--end" x="302" y="144">
+          {lastPoint.date.slice(5)}
+        </text>
+      ) : null}
+    </svg>
+  );
+}
+
+function TrendLineCard({
+  title,
+  metric,
+  points,
+  weightUnit
+}: {
+  title: string;
+  metric: TrendMetric;
+  points: HistoryPoint[];
+  weightUnit: WeightUnit;
+}) {
+  const trendPoints = getTrendPoints(points, metric);
+  const start = trendPoints[0];
+  const current = trendPoints[trendPoints.length - 1];
+  const diff = start && current ? current.value - start.value : 0;
+
+  return (
+    <article className="trend-card">
+      <div className="trend-card__head">
+        <h3>{title}</h3>
+        {current ? <strong>{formatMetricValue(metric, current.value, weightUnit)}</strong> : null}
+      </div>
+      {start && current ? (
+        <div className="trend-values">
+          <span>
+            開始 {formatMetricValue(metric, start.value, weightUnit)} → 現在 {formatMetricValue(metric, current.value, weightUnit)}
+          </span>
+          <b className={diff > 0 ? "is-positive" : diff < 0 ? "is-negative" : ""}>
+            {formatMetricDelta(metric, diff, weightUnit)}
+          </b>
+        </div>
+      ) : null}
+      {trendPoints.length >= 2 ? (
+        <TrendLineSvg points={trendPoints} />
+      ) : (
+        <div className="status">データ不足。2回以上の記録で線グラフを表示します。</div>
+      )}
+    </article>
+  );
+}
+
+function HistoryDetails({
+  points,
+  weightUnit
+}: {
+  points: HistoryPoint[];
+  weightUnit: WeightUnit;
+}) {
+  if (points.length === 0) {
+    return null;
+  }
+
+  return (
+    <details className="history-details">
+      <summary>詳細履歴を表示</summary>
+      <ChartRows points={points} weightUnit={weightUnit} />
+    </details>
   );
 }
 
@@ -660,23 +818,7 @@ export default async function ProgressPage({
 
       <section className="panel">
         <div className="row">
-          <h2>種目別PR</h2>
-          {!isPro ? <span className="status-badge">一部表示</span> : null}
-        </div>
-        <div className="stack">
-          {visiblePrs.map((pr) => (
-            <PrCard key={pr.exerciseName} pr={pr} weightUnit={weightUnit} />
-          ))}
-        </div>
-        {visiblePrs.length === 0 ? (
-          <div className="status">PRは、トレーニング記録後に表示されます。</div>
-        ) : null}
-        {!isPro ? <ProLock title="全期間の種目別PRはProで確認できます" /> : null}
-      </section>
-
-      <section className="panel">
-        <div className="row">
-          <h2>種目別グラフ</h2>
+          <h2>種目別推移</h2>
           {!isPro ? <span className="status-badge">直近3回</span> : null}
         </div>
         {allExerciseNames.length ? (
@@ -696,12 +838,48 @@ export default async function ProgressPage({
                 </Link>
               ))}
             </div>
-            <ChartRows points={visibleHistory} weightUnit={weightUnit} />
+            <div className="trend-grid">
+              <TrendLineCard
+                title="推定1RM推移"
+                metric="e1rm"
+                points={visibleHistory}
+                weightUnit={weightUnit}
+              />
+              <TrendLineCard
+                title="最高重量推移"
+                metric="maxWeight"
+                points={visibleHistory}
+                weightUnit={weightUnit}
+              />
+              <TrendLineCard
+                title="ボリューム推移"
+                metric="sessionVolume"
+                points={visibleHistory}
+                weightUnit={weightUnit}
+              />
+            </div>
+            <HistoryDetails points={visibleHistory} weightUnit={weightUnit} />
           </>
         ) : (
           <div className="status">種目別の推移は、トレーニング記録後に表示されます。</div>
         )}
-        {!isPro ? <ProLock title="全期間のe1RM履歴と成長グラフはProで解放されます" /> : null}
+        {!isPro ? <ProLock title="30日・90日・全期間の長期推移はProで確認できます" /> : null}
+      </section>
+
+      <section className="panel">
+        <div className="row">
+          <h2>種目別PR</h2>
+          {!isPro ? <span className="status-badge">一部表示</span> : null}
+        </div>
+        <div className="stack">
+          {visiblePrs.map((pr) => (
+            <PrCard key={pr.exerciseName} pr={pr} weightUnit={weightUnit} />
+          ))}
+        </div>
+        {visiblePrs.length === 0 ? (
+          <div className="status">PRは、トレーニング記録後に表示されます。</div>
+        ) : null}
+        {!isPro ? <ProLock title="全期間の種目別PRはProで確認できます" /> : null}
       </section>
 
       <section className="panel">
