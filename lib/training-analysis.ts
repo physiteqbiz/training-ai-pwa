@@ -105,6 +105,19 @@ export type ExerciseAnalysis = {
     set_type: SetType;
     set_order: number;
   } | null;
+  top_set: {
+    weight: number;
+    display_weight: number;
+    display_unit: WeightUnit;
+    reps: number;
+    estimated_1rm: number;
+    estimated_1rm_display: number;
+    set_type: SetType;
+    set_order: number;
+    is_assisted: boolean;
+  } | null;
+  top_set_estimated_1rm_kg: number | null;
+  top_set_notes: string | null;
   main_set: {
     weight: number;
     display_weight: number;
@@ -357,6 +370,43 @@ function getBestSet(sets: NormalizedTrainingSet[]) {
     .sort((a, b) => b.estimated_1rm - a.estimated_1rm || b.weight - a.weight || b.reps - a.reps)[0];
 }
 
+function getTopSet(sets: NormalizedTrainingSet[]) {
+  const topSetCandidates = sets.filter((set) => set.rm_eligible && set.reps >= 1 && set.reps <= 3);
+
+  if (!topSetCandidates.length) {
+    return null;
+  }
+
+  const maxTopSetWeight = topSetCandidates.reduce((max, set) => Math.max(max, set.weight), 0);
+
+  return topSetCandidates
+    .filter((set) => set.weight >= maxTopSetWeight * 0.95)
+    .sort((a, b) => b.weight - a.weight || b.reps - a.reps || b.estimated_1rm - a.estimated_1rm || a.set_order - b.set_order)[0] ?? null;
+}
+
+function getTopSetNotes(
+  exerciseName: string,
+  topSet: NormalizedTrainingSet | null,
+  mainSet: NormalizedTrainingSet | null,
+  displayUnit: WeightUnit
+) {
+  if (!topSet) {
+    return `${exerciseName}: top_set_notes: 1〜3回の高重量トップセットは特定できません。`;
+  }
+
+  const topSetText = `${formatWeight(topSet.weight, displayUnit)}×${topSet.reps}回`;
+  const mainSetText = mainSet
+    ? `${formatWeight(mainSet.weight, displayUnit)}×${mainSet.reps}回`
+    : "なし";
+  const e1RmText = formatWeight(topSet.estimated_1rm, displayUnit);
+
+  if (mainSet && topSet.weight !== mainSet.weight) {
+    return `${exerciseName}: top_set_notes: ${topSetText}を1〜3回の高重量トップセットとして評価します。推定1RM最高値がmain_set=${mainSetText}由来でも、top_set=${topSetText}の高重量帯出力を無視しません。top_set_e1RM=${e1RmText}。`;
+  }
+
+  return `${exerciseName}: top_set_notes: ${topSetText}をその日の高重量トップセットとして評価します。top_set_e1RM=${e1RmText}。`;
+}
+
 function getSameWeightQuality(workingSets: NormalizedTrainingSet[]) {
   if (workingSets.length === 0) {
     return { weight: null, set_count: 0, max_reps: null, min_reps: null, label: "none" as const };
@@ -583,6 +633,7 @@ function buildSuggestedTargets(
     bestRmEligibleSet: NormalizedTrainingSet | null;
     bestSet: NormalizedTrainingSet | null;
     topSingleSet: NormalizedTrainingSet | null;
+    topSet: NormalizedTrainingSet | null;
     workingSetCount: number;
     workingSets: NormalizedTrainingSet[];
     assistedSetCount: number;
@@ -642,15 +693,23 @@ function buildSuggestedTargets(
   const strengthBackoffSets = repeatedMainSetCount >= 2
     ? "1〜2"
     : String(Math.max(1, secondarySets));
-  const topSingleCandidate =
-    analysisBase.topSingleSet && analysisBase.topSingleSet.weight > topWeight
-      ? analysisBase.topSingleSet
-      : null;
-  const topSingleMaxReps =
-    topSingleCandidate &&
-    calculateCandidateE1Rm(topSingleCandidate.weight, 2) <= estimatedOneRepMaxKg * strengthCapRatio
+  const topSetCandidate =
+    analysisBase.topSet &&
+    (
+      analysisBase.topSet.weight > topWeight ||
+      (analysisBase.topSet.weight === topWeight && analysisBase.topSet.reps < topReps)
+    )
+      ? analysisBase.topSet
+      : analysisBase.topSingleSet && analysisBase.topSingleSet.weight > topWeight
+        ? analysisBase.topSingleSet
+        : null;
+  const topSetMaxReps =
+    topSetCandidate?.reps === 1 &&
+    calculateCandidateE1Rm(topSetCandidate.weight, 2) <= estimatedOneRepMaxKg * strengthCapRatio
       ? 2
-      : 1;
+      : Math.max(1, topSetCandidate?.reps ?? 1);
+  const topSetMinReps =
+    topSetCandidate?.reps === 1 ? 1 : Math.max(1, topSetCandidate?.reps ?? 1);
   const hypertrophyMinSets = 2;
   const hypertrophyMaxSets = Math.max(hypertrophyMinSets, Math.min(workingSetCount, 3));
   const fatigueSets = Math.max(1, Math.min(workingSetCount, 3));
@@ -665,15 +724,17 @@ function buildSuggestedTargets(
     { min: topReps + 1, max: topReps + 2, weight: roundToIncrement(topWeight * 0.9), sets: "1〜2" }
   ];
   const strengthTargetDrafts = [
-    ...(topSingleCandidate
+    ...(topSetCandidate
       ? [
           {
             category: "strength_target" as const,
-            weightKg: topSingleCandidate.weight,
-            minReps: 1,
-            maxReps: topSingleMaxReps,
+            weightKg: topSetCandidate.weight,
+            minReps: topSetMinReps,
+            maxReps: topSetMaxReps,
             sets: "1",
-            note: "トップシングル。高重量の感覚を確認し、無理に高回数化しません。",
+            note: topSetCandidate.reps === 1
+              ? "トップシングル。高重量の感覚を確認し、無理に高回数化しません。"
+              : "トップセット。今回できた高重量帯の回数を再現し、無理に高回数化しません。",
             capRatio: strengthCapRatio
           }
         ]
@@ -684,7 +745,7 @@ function buildSuggestedTargets(
       minReps: strengthMinReps,
       maxReps: strengthMaxReps,
       sets: strengthMainSets,
-      note: topSingleCandidate
+      note: topSetCandidate
         ? "今回再現できたメイン重量帯を次回も主軸にします。"
         : "トップセット。無理に更新せず、フォームが崩れるなら据え置きます。",
       capRatio: strengthCapRatio
@@ -826,6 +887,8 @@ export function summarizeExercise(
   const topSingleSet = rmEligibleSets
     .filter((set) => set.reps === 1)
     .sort((a, b) => b.weight - a.weight || a.set_order - b.set_order)[0] ?? null;
+  const topSet = getTopSet(rmEligibleSets);
+  const topSetNotes = getTopSetNotes(exerciseName, topSet, bestRmEligibleSet, displayUnit);
   const workingSets = classifiedSets.filter(
     (set) =>
       !set.is_assisted &&
@@ -854,6 +917,7 @@ export function summarizeExercise(
       bestRmEligibleSet,
       bestSet,
       topSingleSet,
+      topSet,
       workingSetCount: workingSets.length,
       workingSets,
       assistedSetCount: classifiedSets.filter((set) => set.is_assisted).length
@@ -863,8 +927,9 @@ export function summarizeExercise(
     displayUnit
   );
   guardrailNotes.push(
-    `${exerciseName}: max_weight_vs_main_set_notes: max_weight=${formatWeight(maxWeight, displayUnit)}、top_single=${topSingleSet ? `${formatWeight(topSingleSet.weight, displayUnit)}×1回` : "なし"}、main_set=${bestRmEligibleSet ? `${formatWeight(bestRmEligibleSet.weight, displayUnit)}×${bestRmEligibleSet.reps}回` : "なし"}。最大重量、1回だけのトップシングル、複数回のメインセットを混同せず、反復性能・再現性・推定1RM・総ボリュームを分けて説明します。`
+    `${exerciseName}: max_weight_vs_main_set_notes: max_weight=${formatWeight(maxWeight, displayUnit)}、top_single=${topSingleSet ? `${formatWeight(topSingleSet.weight, displayUnit)}×1回` : "なし"}、top_set=${topSet ? `${formatWeight(topSet.weight, displayUnit)}×${topSet.reps}回` : "なし"}、main_set=${bestRmEligibleSet ? `${formatWeight(bestRmEligibleSet.weight, displayUnit)}×${bestRmEligibleSet.reps}回` : "なし"}。最大重量、1回だけのトップシングル、1〜3回のトップセット、複数回のメインセットを混同せず、反復性能・再現性・推定1RM・総ボリュームを分けて説明します。`
   );
+  guardrailNotes.push(topSetNotes);
   const analysis: ExerciseAnalysis = {
     exercise_name: exerciseName,
     set_count: classifiedSets.length,
@@ -906,6 +971,9 @@ export function summarizeExercise(
           set_order: topSingleSet.set_order
         }
       : null,
+    top_set: getSetSummary(topSet, displayUnit),
+    top_set_estimated_1rm_kg: topSet?.estimated_1rm ?? null,
+    top_set_notes: topSetNotes,
     main_set: getSetSummary(bestRmEligibleSet, displayUnit),
     sets: classifiedSets.map((set) => ({
       weight: set.weight,
